@@ -1,6 +1,6 @@
 "use client";
 
-import { Billboard, Text } from "@react-three/drei";
+import { Billboard } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import { useEffect, useMemo, useRef, useState, type MutableRefObject, type RefObject } from "react";
 import * as THREE from "three";
@@ -15,6 +15,8 @@ import type {
   OfficeAgent,
   RenderAgent,
 } from "@/features/retro-office/core/types";
+import { CanvasTextPlane } from "@/features/retro-office/objects/CanvasTextPlane";
+import { formatAgentNameplateText } from "@/features/retro-office/objects/textLayout";
 
 const HEAT_COLS = Math.floor(CANVAS_W / SNAP_GRID);
 const HEAT_ROWS = Math.floor(CANVAS_H / SNAP_GRID);
@@ -254,21 +256,14 @@ export function DeskNameplates({
               <planeGeometry args={[0.035, 0.16]} />
               <meshBasicMaterial color={agent.color} />
             </mesh>
-            <Text
+            <CanvasTextPlane
               position={[0.01, 0.002, 0.001]}
-              fontSize={0.11}
+              width={0.64}
+              height={0.13}
+              text={formatAgentNameplateText(agent.name)}
               color="#fff6d8"
-              anchorX="center"
-              anchorY="middle"
-              maxWidth={0.64}
-              outlineWidth={0.007}
-              outlineColor="#16110a"
-              font={undefined}
-              overflowWrap="break-word"
-              whiteSpace="nowrap"
-            >
-              {agent.name.length > 14 ? agent.name.slice(0, 13) + "…" : agent.name}
-            </Text>
+              fontSizePx={150}
+            />
           </Billboard>
         );
       })}

@@ -12,40 +12,14 @@ import type {
   JanitorActor,
   RenderAgent,
 } from "@/features/retro-office/core/types";
+import { CanvasTextPlane } from "@/features/retro-office/objects/CanvasTextPlane";
+import {
+  buildSpeechBubbleTextLayout,
+  formatAgentNameplateText,
+  formatAgentSubtitleText,
+  measureDisplayUnits,
+} from "@/features/retro-office/objects/textLayout";
 import { AgentModelProps } from "@/features/retro-office/objects/types";
-
-const MAX_NAMEPLATE_TEXT_LENGTH = 10;
-const MAX_SPEECH_BUBBLE_TEXT_LENGTH = 180;
-const MAX_SPEECH_BUBBLE_LINES = 4;
-
-const formatAgentNameplateText = (value: string): string => {
-  const normalized = value.replace(/\s+/g, " ").trim();
-  if (!normalized) return "";
-  if (normalized.length <= MAX_NAMEPLATE_TEXT_LENGTH) return normalized;
-  const [firstName] = normalized.split(" ");
-  return firstName || normalized;
-};
-
-const flattenSpeechBubbleMarkdown = (value: string) =>
-  value
-    .replace(/```[\s\S]*?```/g, " [code] ")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-    .replace(/^>\s*/gm, "")
-    .replace(/^[-*+]\s+/gm, "")
-    .replace(/^#{1,6}\s+/gm, "")
-    .replace(/[*_~]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-const clampSpeechBubbleText = (value: string) => {
-  if (value.length <= MAX_SPEECH_BUBBLE_TEXT_LENGTH) {
-    return { text: value, truncated: false };
-  }
-  const slice = value.slice(0, MAX_SPEECH_BUBBLE_TEXT_LENGTH - 1).trimEnd();
-  return { text: `${slice}…`, truncated: true };
-};
 
 export const AgentModel = memo(function AgentModel({
   agentId,
@@ -615,17 +589,20 @@ export const AgentModel = memo(function AgentModel({
         ? "error"
         : "...";
   const activeSpeechBubble = showSpeech && Boolean(speechText?.trim());
-  const normalizedSpeechBubbleText = activeSpeechBubble
-    ? flattenSpeechBubbleMarkdown(resolvedSpeechText)
-    : resolvedSpeechText;
-  const speechBubblePreview = activeSpeechBubble
-    ? clampSpeechBubbleText(normalizedSpeechBubbleText)
-    : { text: normalizedSpeechBubbleText, truncated: false };
-  const speechBubbleDisplayText = speechBubblePreview.text;
-  const speechBubbleWasTruncated = speechBubblePreview.truncated;
-  const speechBubbleTextLength = speechBubbleDisplayText.length;
+  const speechBubbleLayout = activeSpeechBubble
+    ? buildSpeechBubbleTextLayout(resolvedSpeechText)
+    : { lines: [resolvedSpeechText], text: resolvedSpeechText, truncated: false };
+  const speechBubbleDisplayText = speechBubbleLayout.text;
+  const speechBubbleWasTruncated = speechBubbleLayout.truncated;
+  const speechBubbleDisplayUnits = measureDisplayUnits(
+    speechBubbleDisplayText.replace(/\r?\n/g, " "),
+  );
+  const speechBubbleLongestLineUnits = Math.max(
+    1,
+    ...speechBubbleLayout.lines.map(measureDisplayUnits),
+  );
   const speechBubbleWidth = activeSpeechBubble
-    ? Math.min(4.6, Math.max(1.8, 1.55 + speechBubbleTextLength * 0.018))
+    ? Math.min(4.6, Math.max(1.9, 1.18 + speechBubbleLongestLineUnits * 0.08))
     : 0.36;
   const speechBubblePaddingX = activeSpeechBubble ? 0.34 : 0.06;
   const speechBubblePaddingY = activeSpeechBubble ? 0.3 : 0.06;
@@ -633,28 +610,31 @@ export const AgentModel = memo(function AgentModel({
     0.24,
     speechBubbleWidth - speechBubblePaddingX,
   );
-  const estimatedSpeechCharsPerLine = activeSpeechBubble
-    ? Math.max(10, Math.floor(speechBubbleMaxWidth * 7))
-    : 8;
   const estimatedSpeechLines = activeSpeechBubble
-    ? Math.max(
-        1,
-        Math.min(
-          MAX_SPEECH_BUBBLE_LINES,
-          Math.ceil(speechBubbleTextLength / estimatedSpeechCharsPerLine),
-        ),
-      )
+    ? Math.max(1, speechBubbleLayout.lines.length)
     : 1;
   const speechBubbleHeight = activeSpeechBubble
-    ? Math.max(0.72, estimatedSpeechLines * 0.26 + speechBubblePaddingY)
+    ? Math.max(
+        0.78,
+        estimatedSpeechLines * 0.25 +
+          speechBubblePaddingY +
+          (speechBubbleWasTruncated ? 0.16 : 0),
+      )
     : 0.2;
-  const speechBubbleFontSize = activeSpeechBubble
-    ? speechBubbleTextLength > 110
-      ? 0.188
-      : speechBubbleTextLength > 70
-        ? 0.2
-        : 0.216
-    : 0.13;
+  const speechBubbleFontSize = 0.13;
+  const speechBubbleFontSizePx = activeSpeechBubble
+    ? speechBubbleDisplayUnits > 150
+      ? 50
+      : speechBubbleDisplayUnits > 90
+        ? 54
+        : 58
+    : 48;
+  const speechBubbleTextPlaneHeight = activeSpeechBubble
+    ? Math.max(
+        0.34,
+        speechBubbleHeight - (speechBubbleWasTruncated ? 0.28 : 0.14),
+      )
+    : 0.2;
   const speechBubbleTextColor = activeSpeechBubble
     ? "#f8fafc"
     : status === "error"
@@ -671,9 +651,11 @@ export const AgentModel = memo(function AgentModel({
     : "transparent";
   const speechBubbleBorderInset = activeSpeechBubble ? 0.03 : 0;
   const nameplateText = name ? formatAgentNameplateText(name) : "";
-  const subtitleText = typeof subtitle === "string" ? subtitle.trim() : "";
-  const nameplateFontSize =
-    nameplateText.length > 9 ? 0.118 : nameplateText.length > 7 ? 0.13 : 0.144;
+  const subtitleText =
+    typeof subtitle === "string" ? formatAgentSubtitleText(subtitle) : "";
+  const nameplateDisplayUnits = measureDisplayUnits(nameplateText);
+  const nameplateFontSizePx =
+    nameplateDisplayUnits > 9 ? 144 : nameplateDisplayUnits > 7 ? 154 : 164;
 
   return (
     <group
@@ -1113,29 +1095,24 @@ export const AgentModel = memo(function AgentModel({
             <circleGeometry args={[0.052, 14]} />
             <meshBasicMaterial ref={statusDotMatRef} color="#ef4444" />
           </mesh>
-          <Text
+          <CanvasTextPlane
             position={[-0.02, subtitleText ? 0.05 : 0, 0.001]}
-            fontSize={nameplateFontSize}
+            width={0.68}
+            height={subtitleText ? 0.13 : 0.16}
+            text={nameplateText}
             color="#e8dfc0"
-            anchorX="center"
-            anchorY="middle"
-            maxWidth={0.68}
-            font={undefined}
-          >
-            {nameplateText}
-          </Text>
+            fontSizePx={nameplateFontSizePx}
+          />
           {subtitleText ? (
-            <Text
+            <CanvasTextPlane
               position={[-0.02, -0.085, 0.001]}
-              fontSize={0.082}
+              width={0.68}
+              height={0.1}
+              text={subtitleText}
               color="#8ab4ff"
-              anchorX="center"
-              anchorY="middle"
-              maxWidth={0.68}
-              font={undefined}
-            >
-              {subtitleText}
-            </Text>
+              fontSizePx={112}
+              fontWeight={650}
+            />
           ) : null}
         </Billboard>
       ) : null}
@@ -1202,26 +1179,46 @@ export const AgentModel = memo(function AgentModel({
               depthWrite={false}
             />
           </mesh>
-          <Text
-            position={
-              activeSpeechBubble
-                ? [-speechBubbleWidth / 2 + speechBubblePaddingX / 2, 0, 0.001]
-                : [0, 0, 0.001]
-            }
-            fontSize={speechBubbleFontSize}
-            color={speechBubbleTextColor}
-            anchorX={activeSpeechBubble ? "left" : "center"}
-            anchorY="middle"
-            maxWidth={speechBubbleMaxWidth}
-            textAlign={activeSpeechBubble ? "left" : "center"}
-            lineHeight={1.1}
-            renderOrder={100000}
-            depthOffset={-10}
-            material-depthTest={false}
-            material-depthWrite={false}
-          >
-            {speechBubbleDisplayText}
-          </Text>
+          {activeSpeechBubble ? (
+            <CanvasTextPlane
+              position={[
+                -speechBubbleWidth / 2 +
+                  speechBubblePaddingX / 2 +
+                  speechBubbleMaxWidth / 2,
+                speechBubbleWasTruncated ? 0.06 : 0,
+                0.001,
+              ]}
+              width={speechBubbleMaxWidth}
+              height={speechBubbleTextPlaneHeight}
+              text={speechBubbleDisplayText}
+              color={speechBubbleTextColor}
+              fontSizePx={speechBubbleFontSizePx}
+              fontWeight={650}
+              align="left"
+              paddingX={24}
+              lineHeight={1.13}
+              renderOrder={100000}
+              depthTest={false}
+              depthWrite={false}
+            />
+          ) : (
+            <Text
+              position={[0, 0, 0.001]}
+              fontSize={speechBubbleFontSize}
+              color={speechBubbleTextColor}
+              anchorX="center"
+              anchorY="middle"
+              maxWidth={speechBubbleMaxWidth}
+              textAlign="center"
+              lineHeight={1.1}
+              renderOrder={100000}
+              depthOffset={-10}
+              material-depthTest={false}
+              material-depthWrite={false}
+            >
+              {speechBubbleDisplayText}
+            </Text>
+          )}
           {activeSpeechBubble && speechBubbleWasTruncated ? (
             <Text
               position={[0, -speechBubbleHeight * 0.34, 0.001]}
