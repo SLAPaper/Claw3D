@@ -2,6 +2,8 @@
 
 Claw3D can run against Hermes by using the bundled adapter in
 [`server/hermes-gateway-adapter.js`](../server/hermes-gateway-adapter.js).
+That file remains the public entrypoint; the implementation is split under
+[`server/hermes-adapter/`](../server/hermes-adapter/) by runtime concern.
 
 This is the current production-ready Hermes path in this repository.
 It is not yet a fully native Studio-side Hermes provider. Instead, it
