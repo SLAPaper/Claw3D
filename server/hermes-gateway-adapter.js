@@ -25,6 +25,7 @@ const http = require("http");
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { WebSocketServer } = require("ws");
 
 function loadDotenvFile(filePath) {
@@ -62,11 +63,15 @@ const ADAPTER_PORT = parseInt(process.env.HERMES_ADAPTER_PORT || "18789", 10);
 const HERMES_MODEL = process.env.HERMES_MODEL || "hermes";
 const HERMES_AGENT_NAME = process.env.HERMES_AGENT_NAME || "Hermes";
 const HOME = process.env.HOME || "/tmp";
+const HERMES_ADAPTER_STATE_DIR = (process.env.HERMES_ADAPTER_STATE_DIR || "").trim()
+  || path.join(HOME, ".hermes");
 
 const AGENT_ID = "hermes";
 const MAIN_KEY = "main";
 const MAIN_SESSION_KEY = `agent:${AGENT_ID}:${MAIN_KEY}`;
-const CONFIG_PATH = `${HOME}/.hermes/config.json`;
+const CONFIG_PATH = path.join(HOME, ".hermes", "config.json");
+const ADAPTER_STATE_SCHEMA_VERSION = 1;
+const ADAPTER_STATE_FILE = path.join(HERMES_ADAPTER_STATE_DIR, "claw3d-adapter-state.json");
 const MANAGED_SKILLS_DIR = path.join(HOME, ".hermes", "skills");
 const MAX_TOOL_ROUNDS = 8;
 
@@ -197,6 +202,299 @@ const TEAM_TOOLS = [
 ];
 
 // ---------------------------------------------------------------------------
+// Durable adapter state
+// ---------------------------------------------------------------------------
+
+const CONFIG_CHANGED_MESSAGE = "config changed since last load; re-run config.get and retry";
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function cloneJson(value) {
+  if (value === undefined) return undefined;
+  return JSON.parse(JSON.stringify(value));
+}
+
+function stableJsonValue(value) {
+  if (Array.isArray(value)) return value.map(stableJsonValue);
+  if (!isPlainObject(value)) return value;
+  const sorted = {};
+  for (const key of Object.keys(value).sort()) {
+    sorted[key] = stableJsonValue(value[key]);
+  }
+  return sorted;
+}
+
+function stableStringify(value) {
+  return JSON.stringify(stableJsonValue(value));
+}
+
+function slugifyName(value) {
+  const slug = String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+  return slug || "agent";
+}
+
+function createDefaultAgent() {
+  return {
+    id: AGENT_ID,
+    name: HERMES_AGENT_NAME,
+    workspace: path.join(HOME, ".hermes", "workspace-hermes"),
+    role: "Orchestrator",
+    systemPrompt: ORCHESTRATOR_SYSTEM_PROMPT,
+    settings: { wipe: false, continuity: true, model: HERMES_MODEL },
+  };
+}
+
+function normalizeAgentSettings(rawSettings, fallbackSettings, rawAgent) {
+  const fallback = isPlainObject(fallbackSettings)
+    ? fallbackSettings
+    : { wipe: false, continuity: true, model: HERMES_MODEL };
+  const source = isPlainObject(rawSettings) ? rawSettings : {};
+  const settings = { ...fallback, ...source };
+  if (typeof rawAgent?.model === "string" && rawAgent.model.trim()) {
+    settings.model = rawAgent.model.trim();
+  }
+  if (typeof rawAgent?.wipe === "boolean") settings.wipe = rawAgent.wipe;
+  if (typeof rawAgent?.continuity === "boolean") settings.continuity = rawAgent.continuity;
+  if (typeof rawAgent?.boundaries === "string") settings.boundaries = rawAgent.boundaries;
+  settings.wipe = Boolean(settings.wipe);
+  settings.continuity = settings.continuity !== false;
+  if (typeof settings.model !== "string" || !settings.model.trim()) {
+    settings.model = HERMES_MODEL;
+  } else {
+    settings.model = settings.model.trim();
+  }
+  return settings;
+}
+
+function normalizeAgentRecord(rawAgent, fallbackAgent) {
+  const raw = isPlainObject(rawAgent) ? rawAgent : {};
+  const fallback = isPlainObject(fallbackAgent) ? fallbackAgent : {};
+  const id = typeof raw.id === "string" && raw.id.trim()
+    ? raw.id.trim()
+    : (typeof fallback.id === "string" && fallback.id.trim() ? fallback.id.trim() : AGENT_ID);
+  const fallbackName = typeof fallback.name === "string" && fallback.name.trim()
+    ? fallback.name.trim()
+    : (id === AGENT_ID ? HERMES_AGENT_NAME : "Agent");
+  const name = typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : fallbackName;
+  const workspace = typeof raw.workspace === "string" && raw.workspace.trim()
+    ? raw.workspace.trim()
+    : (typeof fallback.workspace === "string" && fallback.workspace.trim()
+      ? fallback.workspace.trim()
+      : path.join(HOME, ".hermes", `workspace-${slugifyName(name)}`));
+  const role = typeof raw.role === "string"
+    ? raw.role.trim()
+    : (typeof fallback.role === "string" ? fallback.role : (id === AGENT_ID ? "Orchestrator" : ""));
+  const systemPrompt = typeof raw.systemPrompt === "string"
+    ? raw.systemPrompt
+    : (typeof raw.instructions === "string"
+      ? raw.instructions
+      : (typeof fallback.systemPrompt === "string"
+        ? fallback.systemPrompt
+        : (id === AGENT_ID ? ORCHESTRATOR_SYSTEM_PROMPT : `You are ${name}.`)));
+  const settings = normalizeAgentSettings(raw.settings, fallback.settings, raw);
+  return { id, name, workspace, role, systemPrompt, settings };
+}
+
+function agentToConfigEntry(agent) {
+  const entry = {
+    id: agent.id,
+    name: agent.name,
+    workspace: agent.workspace,
+  };
+  if (agent.role) entry.role = agent.role;
+  if (agent.settings?.model) entry.model = agent.settings.model;
+  if (agent.settings) entry.settings = cloneJson(agent.settings);
+  return entry;
+}
+
+function createDefaultConfig() {
+  return {
+    gateway: { reload: { mode: "hot" } },
+    agents: { list: [agentToConfigEntry(createDefaultAgent())] },
+  };
+}
+
+function getConfigAgentList(config = adapterConfig) {
+  const agents = isPlainObject(config?.agents) ? config.agents : {};
+  return Array.isArray(agents.list) ? agents.list.filter(isPlainObject) : [];
+}
+
+function setConfigAgentList(list) {
+  const currentAgents = isPlainObject(adapterConfig.agents) ? adapterConfig.agents : {};
+  adapterConfig = { ...adapterConfig, agents: { ...currentAgents, list } };
+}
+
+function upsertConfigAgent(agent) {
+  const list = getConfigAgentList().map((entry) => ({ ...entry }));
+  const index = list.findIndex((entry) => entry.id === agent.id);
+  const nextEntry = agentToConfigEntry(agent);
+  if (index >= 0) {
+    list[index] = { ...list[index], ...nextEntry };
+  } else {
+    list.push(nextEntry);
+  }
+  setConfigAgentList(list);
+}
+
+function removeConfigAgent(agentId) {
+  if (!agentId) return;
+  setConfigAgentList(getConfigAgentList().filter((entry) => entry.id !== agentId));
+}
+
+function reconcileAgentRegistryFromConfig(options = {}) {
+  const agentsBlock = isPlainObject(adapterConfig.agents) ? adapterConfig.agents : {};
+  const hasConfigList = Array.isArray(agentsBlock.list);
+  const configAgents = hasConfigList ? getConfigAgentList() : [];
+  const configuredIds = new Set();
+
+  for (const entry of configAgents) {
+    const entryId = typeof entry.id === "string" ? entry.id.trim() : "";
+    if (!entryId) continue;
+    configuredIds.add(entryId);
+    const fallback = agentRegistry.get(entryId) || (entryId === AGENT_ID ? createDefaultAgent() : undefined);
+    agentRegistry.set(entryId, normalizeAgentRecord({ ...entry, id: entryId }, fallback));
+  }
+
+  if (options.pruneNonDefault) {
+    for (const agentId of [...agentRegistry.keys()]) {
+      if (agentId === AGENT_ID) continue;
+      if (!configuredIds.has(agentId)) agentRegistry.delete(agentId);
+    }
+  }
+
+  if (!agentRegistry.has(AGENT_ID)) {
+    const defaultEntry = configAgents.find((entry) => entry.id === AGENT_ID);
+    agentRegistry.set(AGENT_ID, normalizeAgentRecord(defaultEntry || {}, createDefaultAgent()));
+  }
+}
+
+function mapToJsonObject(map) {
+  const result = {};
+  for (const [key, value] of map.entries()) {
+    result[key] = cloneJson(value);
+  }
+  return result;
+}
+
+function hydratePlainObjectMap(map, raw, normalizer) {
+  map.clear();
+  if (!isPlainObject(raw)) return;
+  for (const [key, value] of Object.entries(raw)) {
+    const normalized = normalizer(value, key);
+    if (normalized !== undefined) map.set(key, normalized);
+  }
+}
+
+function computeConfigHash(config = adapterConfig) {
+  return crypto.createHash("sha256").update(stableStringify(config)).digest("hex");
+}
+
+function parseConfigRaw(raw) {
+  if (typeof raw !== "string") throw new Error("raw config JSON is required.");
+  const parsed = JSON.parse(raw);
+  if (!isPlainObject(parsed)) throw new Error("raw config JSON must be an object.");
+  return parsed;
+}
+
+function deepMergePlainObjects(base, patch) {
+  const next = isPlainObject(base) ? { ...base } : {};
+  for (const [key, value] of Object.entries(patch || {})) {
+    const current = next[key];
+    if (isPlainObject(current) && isPlainObject(value)) {
+      next[key] = deepMergePlainObjects(current, value);
+    } else {
+      next[key] = cloneJson(value);
+    }
+  }
+  return next;
+}
+
+class HermesAdapterStore {
+  constructor(filePath) {
+    this.filePath = filePath;
+  }
+
+  load() {
+    if (!fs.existsSync(this.filePath)) return null;
+    try {
+      const raw = fs.readFileSync(this.filePath, "utf8");
+      return JSON.parse(raw);
+    } catch (err) {
+      console.warn("[hermes-adapter] Could not load adapter state:", sanitizeErrorMessage(err));
+      return null;
+    }
+  }
+
+  save(state) {
+    const dir = path.dirname(this.filePath);
+    const tempFile = path.join(dir, `${path.basename(this.filePath)}.${process.pid}.${Date.now()}.tmp`);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(tempFile, JSON.stringify(state, null, 2), "utf8");
+    fs.renameSync(tempFile, this.filePath);
+  }
+}
+
+const adapterStore = new HermesAdapterStore(ADAPTER_STATE_FILE);
+
+function buildAdapterStateSnapshot() {
+  return {
+    version: ADAPTER_STATE_SCHEMA_VERSION,
+    agents: [...agentRegistry.values()].map((agent) => cloneJson(agent)),
+    sessionSettings: mapToJsonObject(sessionSettings),
+    config: cloneJson(adapterConfig),
+    skillEnabledByKey: mapToJsonObject(skillEnabledByKey),
+    cronJobs: mapToJsonObject(cronJobs),
+  };
+}
+
+function persistAdapterState() {
+  try {
+    adapterStore.save(buildAdapterStateSnapshot());
+  } catch (err) {
+    console.warn("[hermes-adapter] Could not save adapter state:", sanitizeErrorMessage(err));
+  }
+}
+
+function loadAdapterStateFromDisk() {
+  const state = adapterStore.load();
+  if (!state) return;
+  if (state.version !== ADAPTER_STATE_SCHEMA_VERSION) {
+    console.warn(`[hermes-adapter] Ignoring unsupported adapter state version: ${state.version}`);
+    return;
+  }
+
+  agentRegistry.clear();
+  if (Array.isArray(state.agents)) {
+    for (const rawAgent of state.agents) {
+      const agent = normalizeAgentRecord(rawAgent, undefined);
+      agentRegistry.set(agent.id, agent);
+    }
+  }
+  if (!agentRegistry.has(AGENT_ID)) {
+    agentRegistry.set(AGENT_ID, createDefaultAgent());
+  }
+
+  adapterConfig = isPlainObject(state.config) ? cloneJson(state.config) : createDefaultConfig();
+  reconcileAgentRegistryFromConfig({ pruneNonDefault: Array.isArray(adapterConfig.agents?.list) });
+
+  hydratePlainObjectMap(sessionSettings, state.sessionSettings, (value) =>
+    isPlainObject(value) ? cloneJson(value) : undefined
+  );
+  hydratePlainObjectMap(skillEnabledByKey, state.skillEnabledByKey, (value) =>
+    typeof value === "boolean" ? value : undefined
+  );
+  hydratePlainObjectMap(cronJobs, state.cronJobs, (value, key) => {
+    if (!isPlainObject(value)) return undefined;
+    return { ...cloneJson(value), id: typeof value.id === "string" ? value.id : key };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // In-memory state
 // ---------------------------------------------------------------------------
 
@@ -218,6 +516,8 @@ const activeRuns = new Map();
 /** @type {Map<string, object>} jobId → CronJobSummary */
 const cronJobs = new Map();
 
+let adapterConfig = createDefaultConfig();
+
 /**
  * @type {Map<string, {
  *   id: string, name: string, workspace: string,
@@ -225,16 +525,9 @@ const cronJobs = new Map();
  *   settings: { wipe: boolean, continuity: boolean, model: string, boundaries?: string }
  * }>}
  */
-const agentRegistry = new Map([
-  [AGENT_ID, {
-    id: AGENT_ID,
-    name: HERMES_AGENT_NAME,
-    workspace: `${HOME}/.hermes/workspace-hermes`,
-    role: "Orchestrator",
-    systemPrompt: ORCHESTRATOR_SYSTEM_PROMPT,
-    settings: { wipe: false, continuity: true, model: HERMES_MODEL },
-  }],
-]);
+const agentRegistry = new Map([[AGENT_ID, createDefaultAgent()]]);
+
+loadAdapterStateFromDisk();
 
 // Set of all active sendEvent functions (one per connected WS client)
 /** @type {Set<(frame: object) => void>} */
@@ -291,7 +584,7 @@ function clearHistory(sessionKey) {
 }
 
 function randomId() {
-  return require("crypto").randomBytes(8).toString("hex");
+  return crypto.randomBytes(8).toString("hex");
 }
 
 function redactSecrets(value) {
@@ -791,10 +1084,13 @@ async function execSpawnAgent(args) {
   let systemPrompt = instructions || `You are ${name}, a ${role || "specialist"} agent.`;
   if (boundaries) systemPrompt += `\n\nBoundaries: ${boundaries}`;
 
-  agentRegistry.set(newId, {
+  const agent = {
     id: newId, name, workspace: `${HOME}/.hermes/workspace-${slug}`,
     role, systemPrompt, settings: { wipe, continuity, model, boundaries },
-  });
+  };
+  agentRegistry.set(newId, agent);
+  upsertConfigAgent(agent);
+  persistAdapterState();
 
   console.log(`[hermes-adapter] Spawned agent: ${name} (${newId})`);
 
@@ -899,6 +1195,8 @@ function execConfigureAgent(args) {
   }
   if (typeof args.model === "string" && args.model.trim()) agent.settings.model = args.model.trim();
   console.log(`[hermes-adapter] Configured agent: ${agent.name} (${targetId})`);
+  upsertConfigAgent(agent);
+  persistAdapterState();
   broadcastEvent({
     type: "event", event: "presence",
     payload: {
@@ -920,6 +1218,8 @@ function execDismissAgent(args) {
   const agent = agentRegistry.get(targetId);
   if (!agent) return JSON.stringify({ ok: false, error: `Agent ${targetId} not found` });
   agentRegistry.delete(targetId);
+  removeConfigAgent(targetId);
+  persistAdapterState();
   clearHistory(`agent:${targetId}:${MAIN_KEY}`);
   console.log(`[hermes-adapter] Dismissed agent: ${agent.name} (${targetId})`);
   return JSON.stringify({ ok: true, dismissed: targetId });
@@ -1059,11 +1359,14 @@ async function handleMethod(method, params, id, sendEvent) {
       const newId = `${slug}-${randomId().slice(0, 6)}`;
       const workspace = (typeof p.workspace === "string" && p.workspace)
         ? p.workspace : `${HOME}/.hermes/workspace-${slug}`;
-      agentRegistry.set(newId, {
+      const agent = {
         id: newId, name: agentName, workspace,
         role: "", systemPrompt: `You are ${agentName}.`,
         settings: { wipe: false, continuity: true, model: HERMES_MODEL },
-      });
+      };
+      agentRegistry.set(newId, agent);
+      upsertConfigAgent(agent);
+      persistAdapterState();
       return resOk(id, { agentId: newId, name: agentName, workspace });
     }
 
@@ -1071,6 +1374,8 @@ async function handleMethod(method, params, id, sendEvent) {
       const delId = typeof p.agentId === "string" ? p.agentId : "";
       if (delId && delId !== AGENT_ID) {
         agentRegistry.delete(delId);
+        removeConfigAgent(delId);
+        persistAdapterState();
         clearHistory(`agent:${delId}:${MAIN_KEY}`);
       }
       return resOk(id, { ok: true, removedBindings: 0 });
@@ -1083,6 +1388,8 @@ async function handleMethod(method, params, id, sendEvent) {
         if (typeof p.name === "string" && p.name.trim()) existing.name = p.name.trim();
         if (typeof p.workspace === "string" && p.workspace.trim()) existing.workspace = p.workspace.trim();
         if (typeof p.role === "string") existing.role = p.role.trim();
+        upsertConfigAgent(existing);
+        persistAdapterState();
       }
       return resOk(id, { ok: true, removedBindings: 0 });
     }
@@ -1122,12 +1429,46 @@ async function handleMethod(method, params, id, sendEvent) {
     // --- Config -------------------------------------------------------------
 
     case "config.get":
-      return resOk(id, { config: { gateway: { reload: { mode: "hot" } } },
-        hash: "hermes-adapter", exists: true, path: CONFIG_PATH });
+      return resOk(id, {
+        config: cloneJson(adapterConfig),
+        hash: computeConfigHash(),
+        exists: true,
+        path: CONFIG_PATH,
+      });
 
-    case "config.patch":
-    case "config.set":
-      return resOk(id, { hash: "hermes-adapter" });
+    case "config.set": {
+      const currentHash = computeConfigHash();
+      if (p.baseHash !== undefined && String(p.baseHash).trim() !== currentHash) {
+        return resErr(id, "invalid_request", CONFIG_CHANGED_MESSAGE);
+      }
+      let nextConfig;
+      try {
+        nextConfig = parseConfigRaw(p.raw);
+      } catch (err) {
+        return resErr(id, "invalid_request", sanitizeErrorMessage(err));
+      }
+      adapterConfig = cloneJson(nextConfig);
+      reconcileAgentRegistryFromConfig({ pruneNonDefault: true });
+      persistAdapterState();
+      return resOk(id, { hash: computeConfigHash() });
+    }
+
+    case "config.patch": {
+      const currentHash = computeConfigHash();
+      if (p.baseHash !== undefined && String(p.baseHash).trim() !== currentHash) {
+        return resErr(id, "invalid_request", CONFIG_CHANGED_MESSAGE);
+      }
+      let patch;
+      try {
+        patch = parseConfigRaw(p.raw);
+      } catch (err) {
+        return resErr(id, "invalid_request", sanitizeErrorMessage(err));
+      }
+      adapterConfig = deepMergePlainObjects(adapterConfig, patch);
+      reconcileAgentRegistryFromConfig({ pruneNonDefault: true });
+      persistAdapterState();
+      return resOk(id, { hash: computeConfigHash() });
+    }
 
     // --- Sessions -----------------------------------------------------------
 
@@ -1175,6 +1516,7 @@ async function handleMethod(method, params, id, sendEvent) {
       if (p.execSecurity !== undefined) next.execSecurity = p.execSecurity;
       if (p.execAsk !== undefined) next.execAsk = p.execAsk;
       sessionSettings.set(key, next);
+      persistAdapterState();
       const resolvedModel = await resolveHermesModel(next.model || HERMES_MODEL);
       return resOk(id, { ok: true, key, entry: { thinkingLevel: next.thinkingLevel },
         resolved: { model: resolvedModel, modelProvider: "hermes" } });
@@ -1354,6 +1696,7 @@ async function handleMethod(method, params, id, sendEvent) {
       }
       if (typeof p.enabled === "boolean") {
         skillEnabledByKey.set(skillKey, p.enabled);
+        persistAdapterState();
       }
       const enabled = skillEnabledByKey.get(skillKey) !== false;
       return resOk(id, { ok: true, skillKey, config: { enabled } });
@@ -1396,12 +1739,15 @@ async function handleMethod(method, params, id, sendEvent) {
         payload: p.payload || { kind: "systemEvent", text: "tick" }, state: {},
       };
       cronJobs.set(jobId, job);
+      persistAdapterState();
       return resOk(id, job);
     }
 
     case "cron.remove": {
       const jobId = typeof p.id === "string" ? p.id : "";
-      return resOk(id, { ok: true, removed: cronJobs.delete(jobId) });
+      const removed = cronJobs.delete(jobId);
+      if (removed) persistAdapterState();
+      return resOk(id, { ok: true, removed });
     }
 
     case "cron.patch": {
@@ -1415,6 +1761,7 @@ async function handleMethod(method, params, id, sendEvent) {
       if (p.payload !== undefined) updated.payload = p.payload;
       updated.updatedAtMs = Date.now();
       cronJobs.set(jobId, updated);
+      persistAdapterState();
       return resOk(id, { ok: true, job: updated });
     }
 
@@ -1423,11 +1770,13 @@ async function handleMethod(method, params, id, sendEvent) {
       const job = cronJobs.get(jobId);
       if (!job) return resOk(id, { ok: false });
       cronJobs.set(jobId, { ...job, state: { ...job.state, runningAtMs: Date.now() } });
+      persistAdapterState();
       setTimeout(() => {
         const current = cronJobs.get(jobId);
         if (!current) return;
         const done = { ...current, state: { ...current.state, runningAtMs: undefined, lastRunAtMs: Date.now(), lastStatus: "ok" } };
         cronJobs.set(jobId, done);
+        persistAdapterState();
         broadcastEvent({ type: "event", event: "cron", payload: { action: "finished", jobId, status: "ok", summary: done } });
       }, 3000);
       return resOk(id, { ok: true, ran: true });
