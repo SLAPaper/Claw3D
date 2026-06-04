@@ -125,12 +125,23 @@ describe("hermes-gateway-adapter skills", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     try {
-      const report = await callGateway<{ workspace: string; files: unknown[] }>(
+      const report = await callGateway<{ workspace: string; files: Array<{ name: string }> }>(
         "agents.files.list",
         { agentId }
       );
 
-      expect(report).toEqual({ workspace, files: [] });
+      expect(report.workspace).toBe(workspace);
+      expect(report.files.map((file) => file.name)).toEqual(
+        expect.arrayContaining([
+          "AGENTS.md",
+          "SOUL.md",
+          "IDENTITY.md",
+          "USER.md",
+          "TOOLS.md",
+          "HEARTBEAT.md",
+          "MEMORY.md",
+        ])
+      );
       expect(warn).not.toHaveBeenCalledWith(
         expect.stringContaining("Unhandled method: agents.files.list")
       );

@@ -1,9 +1,7 @@
 "use strict";
 
-const path = require("path");
-
 function createHandleMethod(ctx) {
-  const { config, state, hermes, skills, orchestration, events, utils } = ctx;
+  const { config, state, workspaceFiles, hermes, skills, orchestration, events, utils } = ctx;
   const {
     cloneJson,
     randomId,
@@ -43,6 +41,11 @@ function createHandleMethod(ctx) {
           systemPrompt: `You are ${agentName}.`,
           settings: { wipe: false, continuity: true, model: config.HERMES_MODEL },
         };
+        try {
+          workspaceFiles.ensureBootstrapFiles(agent);
+        } catch (err) {
+          return resErr(id, "invalid_request", sanitizeErrorMessage(err));
+        }
         state.agentRegistry.set(newId, agent);
         state.upsertConfigAgent(agent);
         state.persistAdapterState();
@@ -74,17 +77,18 @@ function createHandleMethod(ctx) {
       }
 
       case "agents.files.get": {
-        const key = `${p.agentId || config.AGENT_ID}/${p.name || ""}`;
-        const content = state.agentFiles.get(key);
-        const fileAgent = state.agentRegistry.get(p.agentId || config.AGENT_ID);
-        const workspace = typeof fileAgent?.workspace === "string" ? fileAgent.workspace : "";
-        const filename = typeof p.name === "string" ? p.name : "";
-        return resOk(id, {
-          workspace,
-          file: content !== undefined
-            ? { content, path: workspace && filename ? path.join(workspace, filename) : "" }
-            : { missing: true, path: workspace && filename ? path.join(workspace, filename) : "" },
-        });
+        const targetAgentId = typeof p.agentId === "string" && p.agentId.trim()
+          ? p.agentId.trim()
+          : config.AGENT_ID;
+        const fileAgent = state.agentRegistry.get(targetAgentId);
+        if (!fileAgent) {
+          return resErr(id, "not_found", `Agent not found: ${targetAgentId}`);
+        }
+        try {
+          return resOk(id, workspaceFiles.readAgentFile(fileAgent, p.name));
+        } catch (err) {
+          return resErr(id, "invalid_request", sanitizeErrorMessage(err));
+        }
       }
 
       case "agents.files.list": {
@@ -95,14 +99,26 @@ function createHandleMethod(ctx) {
         if (!fileAgent) {
           return resErr(id, "not_found", `Agent not found: ${targetAgentId}`);
         }
-        const workspace = typeof fileAgent.workspace === "string" ? fileAgent.workspace : "";
-        return resOk(id, { workspace, files: state.listStoredAgentFiles(targetAgentId, workspace) });
+        try {
+          return resOk(id, workspaceFiles.listAgentFiles(fileAgent));
+        } catch (err) {
+          return resErr(id, "invalid_request", sanitizeErrorMessage(err));
+        }
       }
 
       case "agents.files.set": {
-        const key = `${p.agentId || config.AGENT_ID}/${p.name || ""}`;
-        state.agentFiles.set(key, typeof p.content === "string" ? p.content : "");
-        return resOk(id, {});
+        const targetAgentId = typeof p.agentId === "string" && p.agentId.trim()
+          ? p.agentId.trim()
+          : config.AGENT_ID;
+        const fileAgent = state.agentRegistry.get(targetAgentId);
+        if (!fileAgent) {
+          return resErr(id, "not_found", `Agent not found: ${targetAgentId}`);
+        }
+        try {
+          return resOk(id, workspaceFiles.writeAgentFile(fileAgent, p.name, p.content));
+        } catch (err) {
+          return resErr(id, "invalid_request", sanitizeErrorMessage(err));
+        }
       }
 
       case "config.get":

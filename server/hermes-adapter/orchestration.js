@@ -3,7 +3,7 @@
 const path = require("path");
 
 function createOrchestration(ctx) {
-  const { config, state, hermes, utils, events } = ctx;
+  const { config, state, workspaceFiles, hermes, utils, events } = ctx;
   const { randomId, sanitizeErrorMessage } = utils;
 
   const TEAM_TOOLS = [
@@ -125,6 +125,11 @@ function createOrchestration(ctx) {
       systemPrompt,
       settings: { wipe, continuity, model, boundaries },
     };
+    try {
+      workspaceFiles.ensureBootstrapFiles(agent);
+    } catch (err) {
+      return JSON.stringify({ ok: false, error: sanitizeErrorMessage(err) });
+    }
     state.agentRegistry.set(newId, agent);
     state.upsertConfigAgent(agent);
     state.persistAdapterState();

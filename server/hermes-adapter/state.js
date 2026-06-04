@@ -17,8 +17,6 @@ function createState(config, utils) {
   const conversationHistory = new Map();
   /** @type {Map<string, {model?: string, thinkingLevel?: string}>} */
   const sessionSettings = new Map();
-  /** @type {Map<string, string>} agentId/filename -> content */
-  const agentFiles = new Map();
   /** @type {Map<string, boolean>} skillKey -> enabled */
   const skillEnabledByKey = new Map();
   /** @type {Map<string, {runId: string, sessionKey: string, agentId: string, abort: () => void}>} */
@@ -330,22 +328,6 @@ function createState(config, utils) {
     saveHistoryToDisk();
   }
 
-  function listStoredAgentFiles(agentId, workspace) {
-    const prefix = `${agentId}/`;
-    return [...agentFiles.entries()]
-      .filter(([key]) => key.startsWith(prefix))
-      .map(([key, content]) => {
-        const name = key.slice(prefix.length);
-        return {
-          name,
-          path: workspace && name ? path.join(workspace, name) : "",
-          missing: false,
-          size: Buffer.byteLength(content, "utf8"),
-        };
-      })
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }
-
   function getAdapterConfig() {
     return adapterConfig;
   }
@@ -363,7 +345,6 @@ function createState(config, utils) {
   return {
     conversationHistory,
     sessionSettings,
-    agentFiles,
     skillEnabledByKey,
     activeRuns,
     cronJobs,
@@ -387,7 +368,6 @@ function createState(config, utils) {
     saveHistoryToDisk,
     getHistory,
     clearHistory,
-    listStoredAgentFiles,
   };
 }
 

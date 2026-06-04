@@ -41,6 +41,11 @@ The adapter supports the main office and chat path:
   and cron jobs
 - Real `config.get`, `config.set`, and `config.patch` with deterministic hashes
   and stale-write rejection
+- Real workspace-backed `agents.files.get`, `agents.files.list`, and
+  `agents.files.set`
+- Workspace bootstrap for the seven Claw3D agent brain files:
+  `AGENTS.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `TOOLS.md`,
+  `HEARTBEAT.md`, and `MEMORY.md`
 - Main-agent orchestration tools:
   - `spawn_agent`
   - `delegate_task`
@@ -70,7 +75,7 @@ directory.
 |---:|---|---|---|---|
 | 1 | Adapter-owned agents, config, session settings, skill flags, and cron jobs previously lived mostly in process memory. | P0 | M | Addressed by Iteration 1 durable state; keep this as the foundation for later parity work. |
 | 2 | `config.get`, `config.patch`, and `config.set` previously reported success without preserving a real OpenClaw-like config model. | P0 | M | Addressed by Iteration 1 persisted config plus deterministic hash/baseHash behavior. |
-| 3 | `agents.files.*` is backed by an in-memory map. OpenClaw creates real workspaces and bootstrap files; Hermes currently only reports paths for many flows. | P0/P1 | M | Needed before skills, identity recovery, and workspace-oriented flows can be trustworthy. |
+| 3 | `agents.files.*` was backed by an in-memory map. OpenClaw creates real workspaces and bootstrap files; Hermes previously only reported paths for many flows. | P0/P1 | M | Addressed by Iteration 2 real workspace files and brain-file bootstrap. |
 | 4 | Exec approvals, command security, tool allow/deny policy, and sandboxing are not enforced like OpenClaw. `exec.approvals.*` is currently a compatibility surface. | P0 | S-XL | First make capability semantics honest in the UI. Full PI/sandbox parity is a larger runtime project. |
 | 5 | `skills.install` is not implemented. `skills.update` only toggles an in-memory flag, and packaged install relies on a special `chat.send` path for file writes. | P1 | M | Implement after real workspace files exist. |
 | 6 | Task board support is incomplete. The adapter exposes `tasks.list` as an empty list but does not implement `tasks.create`, `tasks.update`, or `tasks.delete`. | P1 | M | A local durable task store would unlock the office task UI for Hermes. |
@@ -115,10 +120,13 @@ Scope:
 
 - Have `agents.create` create the configured workspace directory.
 - Bootstrap core files such as:
-  - `IDENTITY.md`
-  - `SOUL.md`
   - `AGENTS.md`
+  - `SOUL.md`
+  - `IDENTITY.md`
+  - `USER.md`
+  - `TOOLS.md`
   - `HEARTBEAT.md`
+  - `MEMORY.md`
 - Move `agents.files.get`, `agents.files.list`, and `agents.files.set` to real
   filesystem reads and writes inside each agent workspace.
 - Preserve path validation so adapter file operations cannot escape the agent

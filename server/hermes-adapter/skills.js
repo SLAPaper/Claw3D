@@ -3,10 +3,8 @@
 const fs = require("fs");
 const path = require("path");
 
-function createSkills(config, state, utils) {
+function createSkills(config, state, utils, workspaceFiles) {
   const {
-    isPathInside,
-    normalizePathForValidation,
     sanitizeErrorMessage,
   } = utils;
 
@@ -61,28 +59,6 @@ function createSkills(config, state, utils) {
     return files;
   }
 
-  function resolveInstallerFilePath(workspaceDir, relativePath) {
-    const normalized = normalizePathForValidation(relativePath.trim());
-    const segments = normalized.split("/");
-    const hasInvalidSegment = segments.some((segment) => !segment || segment === "." || segment === "..");
-    const hasDrivePrefix = /^[A-Za-z]:/.test(normalized);
-    if (
-      !normalized.startsWith("skills/") ||
-      hasInvalidSegment ||
-      hasDrivePrefix ||
-      path.isAbsolute(relativePath) ||
-      path.isAbsolute(normalized)
-    ) {
-      throw new Error(`Invalid installer file path: ${relativePath}`);
-    }
-
-    const targetPath = path.resolve(workspaceDir, ...segments);
-    if (!isPathInside(workspaceDir, targetPath)) {
-      throw new Error(`Invalid installer file path outside workspace: ${relativePath}`);
-    }
-    return targetPath;
-  }
-
   function writeSkillInstallerFiles(agent, message) {
     const workspaceDir = typeof agent?.workspace === "string" ? agent.workspace.trim() : "";
     if (!workspaceDir) {
@@ -91,9 +67,11 @@ function createSkills(config, state, utils) {
 
     const files = parseInstallerFiles(message);
     for (const file of files) {
-      const targetPath = resolveInstallerFilePath(workspaceDir, file.relativePath);
-      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-      fs.writeFileSync(targetPath, file.content, "utf8");
+      workspaceFiles.writeAgentFile(agent, file.relativePath, file.content, {
+        bootstrap: false,
+        label: "installer file path",
+        requiredPrefix: "skills/",
+      });
     }
     return { workspaceDir, filesWritten: files.length };
   }

@@ -83,6 +83,7 @@ office use:
 - Agent listing, creation, update, and deletion
 - Session listing, preview, patch, reset, and history lookup
 - Chat send, targeted abort, and run wait
+- Workspace-backed `agents.files.get/list/set` with bootstrap agent brain files
 - Persisted config get/set/patch with hash protection for Studio writes
 - Models and skills status
 - Exec approvals surfaces used by the current UI
@@ -149,6 +150,11 @@ Conversation history is stored at:
 ```
 
 It is loaded on startup and updated when conversations change.
+
+Agent workspace files are stored in each agent's configured workspace, not in
+the adapter state file. Creating an agent bootstraps `AGENTS.md`, `SOUL.md`,
+`IDENTITY.md`, `USER.md`, `TOOLS.md`, `HEARTBEAT.md`, and `MEMORY.md` if they
+do not already exist.
 
 ## Current limitations
 
