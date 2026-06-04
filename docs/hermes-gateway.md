@@ -40,6 +40,7 @@ HERMES_API_KEY=
 HERMES_ADAPTER_PORT=18789
 HERMES_MODEL=hermes
 HERMES_AGENT_NAME=Hermes
+HERMES_ADAPTER_STATE_DIR=
 ```
 
 ### 3. Start Claw3D and the adapter
@@ -80,7 +81,7 @@ office use:
 - Agent listing, creation, update, and deletion
 - Session listing, preview, patch, reset, and history lookup
 - Chat send, targeted abort, and run wait
-- Config get/set/patch shims needed by the Studio UI
+- Persisted config get/set/patch with hash protection for Studio writes
 - Models and skills status
 - Exec approvals surfaces used by the current UI
 - Cron list/add/remove/patch/run
@@ -126,6 +127,19 @@ provider feasible as a follow-up without reworking the whole UI again.
 
 ## Persistence
 
+Adapter-owned gateway state is stored at:
+
+```text
+~/.hermes/claw3d-adapter-state.json
+```
+
+That state includes Claw3D-visible agents, session settings, adapter
+config, skill enablement flags, and cron jobs. Set
+`HERMES_ADAPTER_STATE_DIR` to store the same
+`claw3d-adapter-state.json` file under a different directory. If the
+state file contains corrupt JSON, the adapter logs a warning and falls
+back to default state without deleting the bad file.
+
 Conversation history is stored at:
 
 ```text
@@ -138,10 +152,14 @@ It is loaded on startup and updated when conversations change.
 
 - Hermes is integrated through the adapter path today, not yet through a
   dedicated native Studio provider implementation
-- Config and approvals behavior still matches the current adapter contract,
-  not a fully Hermes-native settings model
+- Exec approvals behavior still matches the current adapter compatibility
+  contract, not a fully Hermes-native permissions model
 - This path is intended to get Hermes working reliably now while the
   broader runtime-provider architecture continues to mature
+
+For a planning-focused breakdown of the parity gaps versus the native
+OpenClaw gateway path, see
+[`docs/hermes-adapter-gap-analysis.md`](hermes-adapter-gap-analysis.md).
 
 ## When to use demo mode instead
 
