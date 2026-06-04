@@ -67,6 +67,7 @@ const AGENT_ID = "hermes";
 const MAIN_KEY = "main";
 const MAIN_SESSION_KEY = `agent:${AGENT_ID}:${MAIN_KEY}`;
 const CONFIG_PATH = `${HOME}/.hermes/config.json`;
+const MANAGED_SKILLS_DIR = path.join(HOME, ".hermes", "skills");
 const MAX_TOOL_ROUNDS = 8;
 
 // ---------------------------------------------------------------------------
@@ -207,6 +208,9 @@ const sessionSettings = new Map();
 
 /** @type {Map<string, string>} agentId/filename → content */
 const agentFiles = new Map();
+
+/** @type {Map<string, boolean>} skillKey → enabled */
+const skillEnabledByKey = new Map();
 
 /** @type {Map<string, {runId: string, sessionKey: string, agentId: string, abort: () => void}>} runId → abort handle */
 const activeRuns = new Map();
@@ -355,6 +359,199 @@ function sanitizeErrorMessage(error) {
   if (!error) return "Unknown error";
   if (typeof error === "string") return redactSecrets(error);
   return redactSecrets(error.message || String(error));
+}
+
+function normalizePathForValidation(value) {
+  return value.replace(/\\/g, "/");
+}
+
+function isPathInside(parentPath, childPath) {
+  const relative = path.relative(path.resolve(parentPath), path.resolve(childPath));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function resolveAgentIdFromSessionKey(sessionKey) {
+  return sessionKey.startsWith("agent:") ? sessionKey.split(":")[1] : AGENT_ID;
+}
+
+function parseJsonStringLiteral(value, label) {
+  try {
+    const parsed = JSON.parse(value);
+    if (typeof parsed !== "string") {
+      throw new Error(`${label} must be a JSON string.`);
+    }
+    return parsed;
+  } catch (err) {
+    if (err && typeof err.message === "string" && err.message.includes("must be")) {
+      throw err;
+    }
+    throw new Error(`Invalid installer ${label}.`);
+  }
+}
+
+function parseInstallerFiles(message) {
+  const filesMarker = "\nFiles:";
+  const markerIndex = message.indexOf(filesMarker);
+  if (markerIndex < 0) {
+    throw new Error("Invalid skill installer request: missing Files block.");
+  }
+
+  const lines = message.slice(markerIndex + filesMarker.length).split(/\r?\n/);
+  const files = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line.trim()) continue;
+
+    const pathMatch = line.match(/^\s*-\s*path:\s*(.+)\s*$/);
+    if (!pathMatch) {
+      throw new Error("Invalid skill installer request: expected file path entry.");
+    }
+    const contentLine = lines[index + 1] ?? "";
+    const contentMatch = contentLine.match(/^\s*content:\s*(.+)\s*$/);
+    if (!contentMatch) {
+      throw new Error("Invalid skill installer request: expected file content entry.");
+    }
+    index += 1;
+
+    files.push({
+      relativePath: parseJsonStringLiteral(pathMatch[1].trim(), "file path"),
+      content: parseJsonStringLiteral(contentMatch[1].trim(), "file content"),
+    });
+  }
+
+  if (files.length === 0) {
+    throw new Error("Invalid skill installer request: no files provided.");
+  }
+  return files;
+}
+
+function resolveInstallerFilePath(workspaceDir, relativePath) {
+  const normalized = normalizePathForValidation(relativePath.trim());
+  const segments = normalized.split("/");
+  const hasInvalidSegment = segments.some((segment) => !segment || segment === "." || segment === "..");
+  const hasDrivePrefix = /^[A-Za-z]:/.test(normalized);
+  if (
+    !normalized.startsWith("skills/") ||
+    hasInvalidSegment ||
+    hasDrivePrefix ||
+    path.isAbsolute(relativePath) ||
+    path.isAbsolute(normalized)
+  ) {
+    throw new Error(`Invalid installer file path: ${relativePath}`);
+  }
+
+  const targetPath = path.resolve(workspaceDir, ...segments);
+  if (!isPathInside(workspaceDir, targetPath)) {
+    throw new Error(`Invalid installer file path outside workspace: ${relativePath}`);
+  }
+  return targetPath;
+}
+
+function writeSkillInstallerFiles(agent, message) {
+  const workspaceDir = typeof agent?.workspace === "string" ? agent.workspace.trim() : "";
+  if (!workspaceDir) {
+    throw new Error("Cannot install skill files because the Hermes agent has no workspace.");
+  }
+
+  const files = parseInstallerFiles(message);
+  for (const file of files) {
+    const targetPath = resolveInstallerFilePath(workspaceDir, file.relativePath);
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(targetPath, file.content, "utf8");
+  }
+  return { workspaceDir, filesWritten: files.length };
+}
+
+function parseSkillFrontmatter(content) {
+  const lines = content.split(/\r?\n/);
+  if ((lines[0] || "").trim() !== "---") {
+    return {};
+  }
+  const endIndex = lines.findIndex((line, index) => index > 0 && line.trim() === "---");
+  if (endIndex < 0) {
+    return {};
+  }
+
+  const fields = {};
+  for (const line of lines.slice(1, endIndex)) {
+    const match = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+    if (!match) continue;
+    fields[match[1]] = match[2].trim();
+  }
+
+  let metadata = null;
+  if (typeof fields.metadata === "string" && fields.metadata) {
+    try { metadata = JSON.parse(fields.metadata); }
+    catch { metadata = null; }
+  }
+  return {
+    name: typeof fields.name === "string" ? fields.name : "",
+    description: typeof fields.description === "string" ? fields.description : "",
+    skillKey: typeof metadata?.openclaw?.skillKey === "string" ? metadata.openclaw.skillKey : "",
+  };
+}
+
+function emptySkillRequirementSet() {
+  return { bins: [], anyBins: [], env: [], config: [], os: [] };
+}
+
+function buildSkillStatusEntry(params) {
+  const content = fs.readFileSync(params.skillDocPath, "utf8");
+  const frontmatter = parseSkillFrontmatter(content);
+  const fallbackKey = path.basename(params.baseDir);
+  const skillKey = (frontmatter.skillKey || fallbackKey).trim();
+  const disabled = skillEnabledByKey.get(skillKey) === false;
+  return {
+    name: (frontmatter.name || fallbackKey).trim(),
+    description: (frontmatter.description || "").trim(),
+    source: params.source,
+    bundled: false,
+    filePath: params.skillDocPath,
+    baseDir: params.baseDir,
+    skillKey,
+    always: false,
+    disabled,
+    blockedByAllowlist: false,
+    eligible: !disabled,
+    requirements: emptySkillRequirementSet(),
+    missing: emptySkillRequirementSet(),
+    configChecks: [],
+    install: [],
+  };
+}
+
+function scanSkillParentDir(parentDir, source) {
+  if (!fs.existsSync(parentDir)) return [];
+  let entries;
+  try {
+    entries = fs.readdirSync(parentDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const skills = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const baseDir = path.join(parentDir, entry.name);
+    const skillDocPath = path.join(baseDir, "SKILL.md");
+    if (!fs.existsSync(skillDocPath)) continue;
+    try {
+      skills.push(buildSkillStatusEntry({ source, baseDir, skillDocPath }));
+    } catch (err) {
+      console.warn(`[hermes-adapter] Could not read skill ${skillDocPath}:`, sanitizeErrorMessage(err));
+    }
+  }
+  return skills;
+}
+
+function buildSkillStatusReport(agent) {
+  const workspaceDir = typeof agent?.workspace === "string" ? agent.workspace : "";
+  const workspaceSkillsDir = workspaceDir ? path.join(workspaceDir, "skills") : "";
+  const skills = [
+    ...scanSkillParentDir(workspaceSkillsDir, "openclaw-workspace"),
+    ...scanSkillParentDir(MANAGED_SKILLS_DIR, "openclaw-managed"),
+  ].sort((a, b) => a.skillKey.localeCompare(b.skillKey) || a.source.localeCompare(b.source));
+  return { workspaceDir, managedSkillsDir: MANAGED_SKILLS_DIR, skills };
 }
 
 function extractOpenAiStyleError(payload, fallbackMessage) {
@@ -877,7 +1074,15 @@ async function handleMethod(method, params, id, sendEvent) {
     case "agents.files.get": {
       const key = `${p.agentId || AGENT_ID}/${p.name || ""}`;
       const content = agentFiles.get(key);
-      return resOk(id, { file: content !== undefined ? { content } : { missing: true } });
+      const fileAgent = agentRegistry.get(p.agentId || AGENT_ID);
+      const workspace = typeof fileAgent?.workspace === "string" ? fileAgent.workspace : "";
+      const filename = typeof p.name === "string" ? p.name : "";
+      return resOk(id, {
+        workspace,
+        file: content !== undefined
+          ? { content, path: workspace && filename ? path.join(workspace, filename) : "" }
+          : { missing: true, path: workspace && filename ? path.join(workspace, filename) : "" },
+      });
     }
 
     case "agents.files.set": {
@@ -963,9 +1168,26 @@ async function handleMethod(method, params, id, sendEvent) {
       if (!userMessage) return resOk(id, { status: "no-op", runId });
 
       // Resolve which agent owns this session
-      const sessionAgentId = sessionKey.startsWith("agent:") ? sessionKey.split(":")[1] : AGENT_ID;
+      const sessionAgentId = resolveAgentIdFromSessionKey(sessionKey);
       const agent = agentRegistry.get(sessionAgentId);
       const isOrchestrator = sessionAgentId === AGENT_ID;
+
+      if (
+        typeof p.idempotencyKey === "string" &&
+        p.idempotencyKey.startsWith("skill-install:") &&
+        userMessage.includes("Create these exact skill files inside the current workspace.")
+      ) {
+        if (!agent) {
+          throw new Error(`Cannot install skill files because agent ${sessionAgentId} was not found.`);
+        }
+        const installResult = writeSkillInstallerFiles(agent, userMessage);
+        sendEvent({ type: "event", event: "chat", payload: {
+          runId, sessionKey, state: "final", stopReason: "end_turn",
+          message: { role: "assistant", content: "INSTALLED" },
+        } });
+        return resOk(id, { status: "started", runId, installed: true,
+          workspaceDir: installResult.workspaceDir, filesWritten: installResult.filesWritten });
+      }
 
       let aborted = false;
       activeRuns.set(runId, {
@@ -1086,8 +1308,28 @@ async function handleMethod(method, params, id, sendEvent) {
 
     // --- Skills & models ----------------------------------------------------
 
-    case "skills.status":
-      return resOk(id, { skills: [] });
+    case "skills.status": {
+      const targetAgentId = typeof p.agentId === "string" && p.agentId.trim()
+        ? p.agentId.trim()
+        : AGENT_ID;
+      const agent = agentRegistry.get(targetAgentId);
+      if (!agent) {
+        return resErr(id, "not_found", `Agent not found: ${targetAgentId}`);
+      }
+      return resOk(id, buildSkillStatusReport(agent));
+    }
+
+    case "skills.update": {
+      const skillKey = typeof p.skillKey === "string" ? p.skillKey.trim() : "";
+      if (!skillKey) {
+        return resErr(id, "invalid_request", "skillKey is required.");
+      }
+      if (typeof p.enabled === "boolean") {
+        skillEnabledByKey.set(skillKey, p.enabled);
+      }
+      const enabled = skillEnabledByKey.get(skillKey) !== false;
+      return resOk(id, { ok: true, skillKey, config: { enabled } });
+    }
 
     case "models.list":
       try {
@@ -1225,7 +1467,7 @@ function startAdapter() {
               "status","config.get","config.set","config.patch",
               "agents.files.get","agents.files.set",
               "exec.approvals.get","exec.approvals.set","exec.approval.resolve",
-              "wake","skills.status","models.list",
+              "wake","skills.status","skills.update","models.list",
               "tasks.list",
               "cron.list","cron.add","cron.remove","cron.patch","cron.run"],
               events: ["chat","presence","heartbeat","cron"] },
@@ -1275,5 +1517,12 @@ function startAdapter() {
   });
 }
 
-loadHistoryFromDisk();
-startAdapter();
+if (require.main === module) {
+  loadHistoryFromDisk();
+  startAdapter();
+}
+
+module.exports = {
+  handleMethod,
+  startAdapter,
+};
