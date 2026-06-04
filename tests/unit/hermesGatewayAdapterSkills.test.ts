@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
 const originalHome = process.env.HOME;
 const hermesHome = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-home-"));
@@ -117,6 +117,26 @@ describe("hermes-gateway-adapter skills", () => {
     expect(report.workspaceDir).toBe(workspace);
     expect(report.managedSkillsDir).toMatch(/[\\/]\.hermes[\\/]skills$/);
     expect(report.skills).toEqual([]);
+  });
+
+  it("lists agent files without falling through to the unhandled method logger", async () => {
+    const workspace = makeWorkspace();
+    const agentId = await createAgentWithWorkspace(workspace);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const report = await callGateway<{ workspace: string; files: unknown[] }>(
+        "agents.files.list",
+        { agentId }
+      );
+
+      expect(report).toEqual({ workspace, files: [] });
+      expect(warn).not.toHaveBeenCalledWith(
+        expect.stringContaining("Unhandled method: agents.files.list")
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("writes packaged skill files from installer chat and reports the installed skill", async () => {

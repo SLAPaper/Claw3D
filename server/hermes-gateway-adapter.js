@@ -554,6 +554,22 @@ function buildSkillStatusReport(agent) {
   return { workspaceDir, managedSkillsDir: MANAGED_SKILLS_DIR, skills };
 }
 
+function listStoredAgentFiles(agentId, workspace) {
+  const prefix = `${agentId}/`;
+  return [...agentFiles.entries()]
+    .filter(([key]) => key.startsWith(prefix))
+    .map(([key, content]) => {
+      const name = key.slice(prefix.length);
+      return {
+        name,
+        path: workspace && name ? path.join(workspace, name) : "",
+        missing: false,
+        size: Buffer.byteLength(content, "utf8"),
+      };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 function extractOpenAiStyleError(payload, fallbackMessage) {
   if (payload && typeof payload === "object") {
     const message =
@@ -1085,6 +1101,18 @@ async function handleMethod(method, params, id, sendEvent) {
       });
     }
 
+    case "agents.files.list": {
+      const targetAgentId = typeof p.agentId === "string" && p.agentId.trim()
+        ? p.agentId.trim()
+        : AGENT_ID;
+      const fileAgent = agentRegistry.get(targetAgentId);
+      if (!fileAgent) {
+        return resErr(id, "not_found", `Agent not found: ${targetAgentId}`);
+      }
+      const workspace = typeof fileAgent.workspace === "string" ? fileAgent.workspace : "";
+      return resOk(id, { workspace, files: listStoredAgentFiles(targetAgentId, workspace) });
+    }
+
     case "agents.files.set": {
       const key = `${p.agentId || AGENT_ID}/${p.name || ""}`;
       agentFiles.set(key, typeof p.content === "string" ? p.content : "");
@@ -1465,7 +1493,7 @@ function startAdapter() {
               "sessions.list","sessions.preview","sessions.patch","sessions.reset",
               "chat.send","chat.abort","chat.history","agent.wait",
               "status","config.get","config.set","config.patch",
-              "agents.files.get","agents.files.set",
+              "agents.files.get","agents.files.list","agents.files.set",
               "exec.approvals.get","exec.approvals.set","exec.approval.resolve",
               "wake","skills.status","skills.update","models.list",
               "tasks.list",
