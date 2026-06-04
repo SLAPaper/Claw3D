@@ -21,11 +21,20 @@ import {
   type SkillStatusEntry,
   type SkillStatusReport,
 } from "@/lib/skills/types";
+import { formatSkillOperationError } from "@/lib/skills/error-messages";
 
 type MarketplaceMessage = {
   kind: "success" | "error";
   text: string;
 };
+
+const buildSkillReportDiagnostics = (
+  report: SkillStatusReport | null | undefined,
+) => ({
+  workspaceDir: report?.workspaceDir,
+  managedSkillsDir: report?.managedSkillsDir,
+  skillCount: report?.skills?.length,
+});
 
 export const useOfficeSkillsMarketplace = ({
   client,
@@ -118,10 +127,12 @@ export const useOfficeSkillsMarketplace = ({
         if (requestId !== requestIdRef.current) {
           return;
         }
-        const nextMessage =
-          err instanceof Error
-            ? err.message
-            : "Failed to load skills marketplace data.";
+        const nextMessage = formatSkillOperationError(err, {
+          action: "Failed to load skills marketplace data",
+          fallback: "Failed to load skills marketplace data.",
+          step: "loading skills and agent allowlist",
+          agentId: resolvedAgentId,
+        });
         setSkillsReport(null);
         setSkillsAllowlist(undefined);
         setError(nextMessage);
@@ -192,10 +203,14 @@ export const useOfficeSkillsMarketplace = ({
           text: params.successMessage,
         });
       } catch (err) {
-        const nextMessage =
-          err instanceof Error
-            ? err.message
-            : "Failed to update the skill.";
+        const nextMessage = formatSkillOperationError(err, {
+          action: "Failed to update the skill",
+          fallback: "Failed to update the skill.",
+          step: "running marketplace mutation",
+          skillKey: normalizedSkillKey,
+          agentId,
+          diagnostics: buildSkillReportDiagnostics(report),
+        });
         setError(nextMessage);
         setMessage({
           kind: "error",
@@ -325,16 +340,21 @@ export const useOfficeSkillsMarketplace = ({
       setError(null);
       setMessage(null);
       onSkillActivityStart?.(targetAgentId);
+      let currentStep = "preparing the install";
+      let initialReport: SkillStatusReport | null = null;
+      let refreshedReport: SkillStatusReport | null = null;
       try {
         params.onProgress?.({
           percent: 12,
           message: "Preparing the workspace skill install.",
         });
-        const initialReport = await loadAgentSkillStatus(client, targetAgentId);
+        currentStep = "loading initial skill status";
+        initialReport = await loadAgentSkillStatus(client, targetAgentId);
         params.onProgress?.({
           percent: 38,
           message: "Installing task-manager into the workspace.",
         });
+        currentStep = "installing packaged skill files";
         await installPackagedSkillViaGatewayAgent({
           client,
           request: {
@@ -351,12 +371,15 @@ export const useOfficeSkillsMarketplace = ({
           percent: 62,
           message: "Enabling task-manager for this gateway.",
         });
+        currentStep = "enabling the skill for the gateway";
         await updateSkill(client, { skillKey: packagedSkill.skillKey, enabled: true });
         params.onProgress?.({
           percent: 78,
           message: "Enabling task-manager for the main agent.",
         });
-        const refreshedReport = await loadAgentSkillStatus(client, targetAgentId);
+        currentStep = "refreshing skill status after install";
+        refreshedReport = await loadAgentSkillStatus(client, targetAgentId);
+        currentStep = "enabling the skill for the selected agent";
         await setAgentSkillEnabled({
           client,
           agentId: targetAgentId,
@@ -368,6 +391,7 @@ export const useOfficeSkillsMarketplace = ({
           percent: 92,
           message: "Refreshing skill state in Claw3D.",
         });
+        currentStep = "refreshing marketplace state";
         await loadMarketplace(targetAgentId);
         params.onProgress?.({
           percent: 100,
@@ -380,10 +404,21 @@ export const useOfficeSkillsMarketplace = ({
           text: `Installed and enabled ${packagedSkill.name.trim()} for ${agentName}.`,
         });
       } catch (err) {
-        const nextMessage =
-          err instanceof Error
-            ? err.message
-            : "Failed to install and enable the skill.";
+        const nextMessage = formatSkillOperationError(err, {
+          action: `Failed to install and enable ${packagedSkill.name.trim()}`,
+          fallback: "Failed to install and enable the skill.",
+          step: currentStep,
+          skillKey: packagedSkill.skillKey,
+          agentId: targetAgentId,
+          diagnostics: {
+            initialWorkspaceDir: initialReport?.workspaceDir,
+            initialManagedSkillsDir: initialReport?.managedSkillsDir,
+            initialSkillCount: initialReport?.skills?.length,
+            refreshedWorkspaceDir: refreshedReport?.workspaceDir,
+            refreshedManagedSkillsDir: refreshedReport?.managedSkillsDir,
+            refreshedSkillCount: refreshedReport?.skills?.length,
+          },
+        });
         setError(nextMessage);
         setMessage({
           kind: "error",

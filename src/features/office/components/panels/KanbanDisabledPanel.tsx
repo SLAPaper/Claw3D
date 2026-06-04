@@ -59,7 +59,7 @@ export function KanbanDisabledPanel({
         ) : null}
 
         {errorMessage ? (
-          <div className="mt-4 rounded-2xl border border-rose-500/20 bg-rose-500/8 px-4 py-3 text-sm text-rose-200">
+          <div className="mt-4 whitespace-pre-wrap break-words rounded-2xl border border-rose-500/20 bg-rose-500/8 px-4 py-3 text-left text-sm text-rose-200">
             {errorMessage}
           </div>
         ) : null}

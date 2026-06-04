@@ -11,7 +11,11 @@ import {
   type PackagedSkillInstallResult,
 } from "@/lib/skills/types";
 
-const normalizeRequired = (value: string, field: string): string => {
+const normalizeRequired = (value: unknown, field: string): string => {
+  if (typeof value !== "string") {
+    const received = value === null ? "null" : typeof value;
+    throw new Error(`${field} is required (received ${received}).`);
+  }
   const trimmed = value.trim();
   if (!trimmed) {
     throw new Error(`${field} is required.`);

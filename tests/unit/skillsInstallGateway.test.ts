@@ -212,4 +212,22 @@ describe("skills install gateway", () => {
       workspace: "/home/pi/.openclaw/workspace-main",
     });
   });
+
+  it("reports missing workspace fields instead of throwing a trim type error", async () => {
+    const call = vi.fn();
+
+    await expect(
+      installPackagedSkillViaGatewayAgent({
+        client: { call } as unknown as GatewayClient,
+        request: {
+          packageId: "task-manager",
+          source: "openclaw-workspace",
+          workspaceDir: undefined,
+          managedSkillsDir: undefined,
+        } as never,
+      })
+    ).rejects.toThrow("workspaceDir is required (received undefined).");
+
+    expect(call).not.toHaveBeenCalled();
+  });
 });
