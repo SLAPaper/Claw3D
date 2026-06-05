@@ -180,6 +180,11 @@ function createStartAdapter(ctx, handleMethod) {
       schedulerHandle = scheduler ? scheduler.start(handleMethod) : null;
       console.log(`\n[hermes-adapter] ✓ Listening on ws://localhost:${config.ADAPTER_PORT}`);
       console.log(`[hermes-adapter] ✓ Forwarding to Hermes API at ${config.HERMES_API_URL}`);
+      if (config.HERMES_PROFILE_API_URL) {
+        console.log(`[hermes-adapter] ✓ Profile roster: Hermes Dashboard API at ${config.HERMES_PROFILE_API_URL}`);
+      } else {
+        console.log("[hermes-adapter] ✓ Profile roster: adapter-owned compat registry");
+      }
       console.log(`[hermes-adapter] ✓ Model: ${config.HERMES_MODEL}`);
       console.log("[hermes-adapter] ✓ Multi-agent orchestration: ENABLED");
       console.log(`\nOpen Claw3D → ws://localhost:${config.ADAPTER_PORT}\n`);

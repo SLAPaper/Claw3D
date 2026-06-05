@@ -1,7 +1,7 @@
 "use strict";
 
 function createHandleMethod(ctx) {
-  const { config, state, workspaceFiles, hermes, skills, usage, orchestration, scheduler, utils } = ctx;
+  const { config, state, workspaceFiles, hermes, profiles, skills, usage, orchestration, scheduler, utils } = ctx;
   const {
     cloneJson,
     randomId,
@@ -120,6 +120,93 @@ function createHandleMethod(ctx) {
 
   function buildHeartbeatStatusAgents() {
     return [...state.agentRegistry.keys()].map((agentId) => resolveHeartbeatBlock(agentId));
+  }
+
+  let warnedProfileFallback = false;
+
+  function agentToGatewayEntry(agent) {
+    const entry = {
+      id: agent.id,
+      name: agent.name,
+      workspace: agent.workspace,
+      identity: { name: agent.name, emoji: "🤖" },
+      role: agent.role,
+    };
+    if (utils.isPlainObject(agent.metadata)) {
+      entry.metadata = cloneJson(agent.metadata);
+    }
+    return entry;
+  }
+
+  function logProfileFallback(err) {
+    if (warnedProfileFallback) return;
+    warnedProfileFallback = true;
+    console.warn(
+      "[hermes-adapter] Hermes profile API unavailable; using compat fallback:",
+      sanitizeErrorMessage(err)
+    );
+  }
+
+  function listAdapterRegistryAgents() {
+    return [...state.agentRegistry.values()].map((agent) => state.normalizeAgentRecord(agent, agent));
+  }
+
+  function syncProfileAgents(profileRecords) {
+    const profileAgentIds = new Set();
+    const agents = [];
+
+    for (const profileRecord of profileRecords) {
+      const fallback = state.agentRegistry.get(
+        profiles.agentIdForProfileName(profileRecord.name, profileRecord.isDefault)
+      );
+      const agent = state.normalizeAgentRecord(
+        profiles.profileToAgent(profileRecord, fallback),
+        fallback
+      );
+      profileAgentIds.add(agent.id);
+      agents.push(agent);
+      state.agentRegistry.set(agent.id, agent);
+      state.upsertConfigAgent(agent);
+    }
+
+    for (const agent of [...state.agentRegistry.values()]) {
+      const isProfileAgent = agent.metadata?.hermesProfileSource === "dashboard";
+      if (isProfileAgent && !profileAgentIds.has(agent.id)) {
+        state.agentRegistry.delete(agent.id);
+        state.removeConfigAgent(agent.id);
+        continue;
+      }
+      if (profileAgentIds.has(agent.id)) continue;
+      agents.push(agent);
+    }
+
+    state.persistAdapterState();
+    return agents;
+  }
+
+  async function resolveVisibleAgents() {
+    if (!profiles?.isConfigured?.()) {
+      return { profileBacked: false, agents: listAdapterRegistryAgents() };
+    }
+    try {
+      const profileRecords = await profiles.listProfiles();
+      return { profileBacked: true, agents: syncProfileAgents(profileRecords) };
+    } catch (err) {
+      logProfileFallback(err);
+      return { profileBacked: false, agents: listAdapterRegistryAgents() };
+    }
+  }
+
+  function buildConfigWithAgents(agents) {
+    const baseConfig = cloneJson(state.getAdapterConfig());
+    const currentAgents = utils.isPlainObject(baseConfig.agents) ? baseConfig.agents : {};
+    return {
+      ...baseConfig,
+      agents: {
+        ...currentAgents,
+        list: agents.map((agent) => state.agentToConfigEntry(agent)),
+      },
+    };
   }
 
   function buildSessionEntry(sessionKey, agent) {
@@ -290,18 +377,44 @@ function createHandleMethod(ctx) {
 
     switch (method) {
       case "agents.list": {
-        const allAgents = [...state.agentRegistry.values()].map((agent) => ({
-          id: agent.id,
-          name: agent.name,
-          workspace: agent.workspace,
-          identity: { name: agent.name, emoji: "🤖" },
-          role: agent.role,
-        }));
+        const { agents } = await resolveVisibleAgents();
+        const allAgents = agents.map(agentToGatewayEntry);
         return resOk(id, { defaultId: config.AGENT_ID, mainKey: config.MAIN_KEY, agents: allAgents });
       }
 
       case "agents.create": {
         const agentName = (typeof p.name === "string" && p.name.trim()) ? p.name.trim() : "Agent";
+        if (profiles?.isConfigured?.()) {
+          const profileName = profiles.slugifyProfileName(agentName);
+          const role = trimString(p.role);
+          try {
+            const profileRecord = await profiles.createProfile({
+              name: profileName,
+              description: role,
+              cloneFromDefault: true,
+              provider: p.provider,
+              model: p.model,
+            });
+            const agent = state.normalizeAgentRecord(
+              profiles.profileToAgent(profileRecord, {
+                name: profileRecord.name || profileName,
+                role,
+              }),
+              undefined
+            );
+            state.agentRegistry.set(agent.id, agent);
+            state.upsertConfigAgent(agent);
+            state.persistAdapterState();
+            return resOk(id, {
+              agentId: agent.id,
+              name: agentName,
+              workspace: agent.workspace,
+              metadata: { hermesProfileName: profileRecord.name },
+            });
+          } catch (err) {
+            return resErr(id, "invalid_request", sanitizeErrorMessage(err));
+          }
+        }
         const slug = agentName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
         const newId = `${slug}-${randomId().slice(0, 6)}`;
         const workspace = (typeof p.workspace === "string" && p.workspace)
@@ -328,6 +441,23 @@ function createHandleMethod(ctx) {
 
       case "agents.delete": {
         const delId = typeof p.agentId === "string" ? p.agentId : "";
+        if (profiles?.isConfigured?.()) {
+          if (!delId) return resErr(id, "invalid_request", "agentId is required.");
+          const profileName = profiles.profileNameForAgentId(delId);
+          if (profileName === "default") {
+            return resErr(id, "invalid_request", "Cannot delete the default Hermes profile.");
+          }
+          try {
+            await profiles.deleteProfile(profileName);
+          } catch (err) {
+            return resErr(id, "invalid_request", sanitizeErrorMessage(err));
+          }
+          state.agentRegistry.delete(delId);
+          state.removeConfigAgent(delId);
+          state.persistAdapterState();
+          state.clearHistory(`agent:${delId}:${config.MAIN_KEY}`);
+          return resOk(id, { ok: true, removedBindings: 0 });
+        }
         if (delId && delId !== config.AGENT_ID) {
           state.agentRegistry.delete(delId);
           state.removeConfigAgent(delId);
@@ -339,6 +469,52 @@ function createHandleMethod(ctx) {
 
       case "agents.update": {
         const updId = typeof p.agentId === "string" ? p.agentId : "";
+        if (profiles?.isConfigured?.()) {
+          if (!updId) return resErr(id, "invalid_request", "agentId is required.");
+          const profileName = profiles.profileNameForAgentId(updId);
+          const requestedName = trimString(p.name);
+          if (requestedName && profileName === "default") {
+            return resErr(id, "invalid_request", "Cannot rename the default Hermes profile.");
+          }
+          let nextAgentId = updId;
+          let renamed = false;
+          try {
+            if (typeof p.role === "string") {
+              await profiles.updateProfileDescription(profileName, p.role);
+              const existing = state.agentRegistry.get(updId);
+              if (existing) {
+                existing.role = trimString(p.role);
+                state.upsertConfigAgent(existing);
+              }
+            }
+            if (requestedName) {
+              const nextProfileName = profiles.slugifyProfileName(requestedName);
+              if (nextProfileName !== profileName) {
+                await profiles.renameProfile(profileName, nextProfileName);
+                nextAgentId = profiles.agentIdForProfileName(nextProfileName, false);
+                const existing = state.agentRegistry.get(updId);
+                if (existing) {
+                  existing.id = nextAgentId;
+                  existing.name = nextProfileName;
+                  existing.metadata = {
+                    ...(utils.isPlainObject(existing.metadata) ? existing.metadata : {}),
+                    hermesProfileName: nextProfileName,
+                  };
+                }
+                state.renameAgentReferences(updId, nextAgentId);
+                renamed = true;
+              }
+            }
+            state.persistAdapterState();
+          } catch (err) {
+            return resErr(id, "invalid_request", sanitizeErrorMessage(err));
+          }
+          return resOk(id, {
+            ok: true,
+            removedBindings: 0,
+            ...(renamed ? { previousAgentId: updId, agentId: nextAgentId, newAgentId: nextAgentId } : {}),
+          });
+        }
         const existing = state.agentRegistry.get(updId);
         if (existing) {
           if (typeof p.name === "string" && p.name.trim()) existing.name = p.name.trim();
@@ -395,13 +571,15 @@ function createHandleMethod(ctx) {
         }
       }
 
-      case "config.get":
+      case "config.get": {
+        const { profileBacked, agents } = await resolveVisibleAgents();
         return resOk(id, {
-          config: cloneJson(state.getAdapterConfig()),
+          config: profileBacked ? buildConfigWithAgents(agents) : cloneJson(state.getAdapterConfig()),
           hash: state.computeConfigHash(),
           exists: true,
           path: config.CONFIG_PATH,
         });
+      }
 
       case "config.set": {
         const currentHash = state.computeConfigHash();

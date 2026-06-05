@@ -5,6 +5,7 @@ const { createUtils } = require("./utils");
 const { createState } = require("./state");
 const { createWorkspaceFiles } = require("./workspace-files");
 const { createHermesApi } = require("./hermes-api");
+const { createProfiles } = require("./profiles");
 const { createSkills } = require("./skills");
 const { createUsage } = require("./usage");
 const { createOrchestration } = require("./orchestration");
@@ -18,6 +19,7 @@ function createRuntime() {
   const state = createState(config, utils);
   const workspaceFiles = createWorkspaceFiles(config, utils);
   const hermes = createHermesApi(config, utils);
+  const profiles = createProfiles(config, utils);
   const events = createEvents();
   const skills = createSkills(config, state, utils, workspaceFiles);
 
@@ -27,6 +29,7 @@ function createRuntime() {
     state,
     workspaceFiles,
     hermes,
+    profiles,
     events,
     skills,
     usage: null,

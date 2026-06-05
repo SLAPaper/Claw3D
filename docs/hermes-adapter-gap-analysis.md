@@ -6,6 +6,12 @@ future Hermes parity work, not as an implementation spec.
 
 Captured: 2026-06-04.
 
+Status update, 2026-06-05: the active execution route for reducing Hermes
+adapter simulation is now
+[`hermes-profile-native-iteration-plan.md`](hermes-profile-native-iteration-plan.md).
+That plan supersedes this document's older agent-roster recommendation. This
+gap analysis remains useful as historical parity context.
+
 ## Current Model
 
 The native OpenClaw path treats OpenClaw as the runtime source of truth. Agent

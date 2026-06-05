@@ -89,7 +89,12 @@ function createState(config, utils) {
           ? fallback.systemPrompt
           : (id === config.AGENT_ID ? config.ORCHESTRATOR_SYSTEM_PROMPT : `You are ${name}.`)));
     const settings = normalizeAgentSettings(raw.settings, fallback.settings, raw);
-    return { id, name, workspace, role, systemPrompt, settings };
+    const metadata = isPlainObject(raw.metadata)
+      ? cloneJson(raw.metadata)
+      : (isPlainObject(fallback.metadata) ? cloneJson(fallback.metadata) : undefined);
+    return metadata
+      ? { id, name, workspace, role, systemPrompt, settings, metadata }
+      : { id, name, workspace, role, systemPrompt, settings };
   }
 
   function agentToConfigEntry(agent) {
@@ -101,6 +106,7 @@ function createState(config, utils) {
     if (agent.role) entry.role = agent.role;
     if (agent.settings?.model) entry.model = agent.settings.model;
     if (agent.settings) entry.settings = cloneJson(agent.settings);
+    if (isPlainObject(agent.metadata)) entry.metadata = cloneJson(agent.metadata);
     return entry;
   }
 
@@ -149,6 +155,93 @@ function createState(config, utils) {
   function removeConfigAgent(agentId) {
     if (!agentId) return;
     setConfigAgentList(getConfigAgentList().filter((entry) => entry.id !== agentId));
+  }
+
+  function replaceAgentIdInSessionKey(sessionKey, oldAgentId, newAgentId) {
+    const prefix = `agent:${oldAgentId}:`;
+    if (typeof sessionKey !== "string" || !sessionKey.startsWith(prefix)) return sessionKey;
+    return `agent:${newAgentId}:${sessionKey.slice(prefix.length)}`;
+  }
+
+  function renameSessionKeyedMap(map, oldAgentId, newAgentId) {
+    for (const [key, value] of [...map.entries()]) {
+      const nextKey = replaceAgentIdInSessionKey(key, oldAgentId, newAgentId);
+      if (nextKey === key) continue;
+      map.delete(key);
+      if (!map.has(nextKey)) {
+        map.set(nextKey, value);
+      }
+    }
+  }
+
+  function renameAgentReferences(oldAgentId, newAgentId) {
+    if (!oldAgentId || !newAgentId || oldAgentId === newAgentId) return false;
+
+    const existing = agentRegistry.get(oldAgentId);
+    if (existing) {
+      agentRegistry.delete(oldAgentId);
+      agentRegistry.set(newAgentId, normalizeAgentRecord({ ...existing, id: newAgentId }, existing));
+    }
+
+    const renamedConfigEntry = existing ? agentToConfigEntry({ ...existing, id: newAgentId }) : null;
+    const list = getConfigAgentList().map((entry) => (
+      entry.id === oldAgentId
+        ? { ...entry, ...(renamedConfigEntry || {}), id: newAgentId }
+        : { ...entry }
+    ));
+    if (existing && !list.some((entry) => entry.id === newAgentId)) {
+      list.push(agentToConfigEntry({ ...existing, id: newAgentId }));
+    }
+    setConfigAgentList(list.filter((entry) => entry.id !== oldAgentId));
+
+    renameSessionKeyedMap(sessionSettings, oldAgentId, newAgentId);
+    renameSessionKeyedMap(conversationHistory, oldAgentId, newAgentId);
+
+    for (const run of activeRuns.values()) {
+      if (run.agentId === oldAgentId) run.agentId = newAgentId;
+      run.sessionKey = replaceAgentIdInSessionKey(run.sessionKey, oldAgentId, newAgentId);
+    }
+
+    for (const [jobId, job] of cronJobs.entries()) {
+      const next = { ...job };
+      let changed = false;
+      if (next.agentId === oldAgentId) {
+        next.agentId = newAgentId;
+        changed = true;
+      }
+      const nextSessionKey = replaceAgentIdInSessionKey(next.sessionKey, oldAgentId, newAgentId);
+      if (nextSessionKey !== next.sessionKey) {
+        next.sessionKey = nextSessionKey;
+        changed = true;
+      }
+      if (changed) cronJobs.set(jobId, next);
+    }
+
+    for (const [taskId, task] of tasksById.entries()) {
+      if (task.assignedAgentId === oldAgentId) {
+        tasksById.set(taskId, { ...task, assignedAgentId: newAgentId });
+      }
+    }
+
+    if (heartbeatStateByAgentId.has(oldAgentId)) {
+      const heartbeatState = heartbeatStateByAgentId.get(oldAgentId);
+      heartbeatStateByAgentId.delete(oldAgentId);
+      if (!heartbeatStateByAgentId.has(newAgentId)) {
+        heartbeatStateByAgentId.set(newAgentId, heartbeatState);
+      }
+    }
+
+    if (isPlainObject(execApprovalsFile.agents)
+      && Object.prototype.hasOwnProperty.call(execApprovalsFile.agents, oldAgentId)) {
+      const agents = { ...execApprovalsFile.agents };
+      if (!Object.prototype.hasOwnProperty.call(agents, newAgentId)) {
+        agents[newAgentId] = agents[oldAgentId];
+      }
+      delete agents[oldAgentId];
+      execApprovalsFile = { ...execApprovalsFile, agents };
+    }
+
+    return true;
   }
 
   function reconcileAgentRegistryFromConfig(options = {}) {
@@ -412,6 +505,7 @@ function createState(config, utils) {
     getConfigAgentList,
     upsertConfigAgent,
     removeConfigAgent,
+    renameAgentReferences,
     reconcileAgentRegistryFromConfig,
     computeConfigHash,
     computeExecApprovalsHash,

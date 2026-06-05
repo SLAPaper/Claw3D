@@ -14,6 +14,12 @@ function createUtils(config) {
     if (config.HERMES_API_KEY) {
       redacted = redacted.split(config.HERMES_API_KEY).join("[REDACTED]");
     }
+    if (config.HERMES_PROFILE_API_TOKEN) {
+      redacted = redacted.split(config.HERMES_PROFILE_API_TOKEN).join("[REDACTED]");
+    }
+    if (config.HERMES_DASHBOARD_SESSION_TOKEN) {
+      redacted = redacted.split(config.HERMES_DASHBOARD_SESSION_TOKEN).join("[REDACTED]");
+    }
     redacted = redacted.replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]");
     redacted = redacted.replace(/\b\d{8,12}:[A-Za-z0-9_-]{20,}\b/g, "[REDACTED]");
     return redacted;

@@ -182,6 +182,22 @@ describe("gateway agent helpers", () => {
     await renameGatewayAgent({ client, agentId: "agent-1", name: "New Name" });
   });
 
+  it("returns the new agent id when a runtime rename changes the id", async () => {
+    const client = {
+      call: vi.fn(async (method: string, params?: unknown) => {
+        if (method === "agents.update") {
+          expect(params).toEqual({ agentId: "coder", name: "QA Lead" });
+          return { ok: true, previousAgentId: "coder", agentId: "qa-lead" };
+        }
+        throw new Error("unexpected method");
+      }),
+    } as unknown as GatewayClient;
+
+    const result = await renameGatewayAgent({ client, agentId: "coder", name: "QA Lead" });
+
+    expect(result).toEqual({ id: "qa-lead", name: "QA Lead" });
+  });
+
   it("resolves heartbeat defaults and overrides", () => {
     const config = {
       agents: {

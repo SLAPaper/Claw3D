@@ -364,8 +364,17 @@ export const renameGatewayAgent = async (params: {
   if (!trimmed) {
     throw new Error("Agent name is required.");
   }
-  await params.client.call("agents.update", { agentId: params.agentId, name: trimmed });
-  return { id: params.agentId, name: trimmed };
+  const result = (await params.client.call("agents.update", {
+    agentId: params.agentId,
+    name: trimmed,
+  })) as { agentId?: unknown; newAgentId?: unknown };
+  const returnedId =
+    typeof result?.newAgentId === "string" && result.newAgentId.trim()
+      ? result.newAgentId.trim()
+      : typeof result?.agentId === "string" && result.agentId.trim()
+        ? result.agentId.trim()
+        : params.agentId;
+  return { id: returnedId, name: trimmed };
 };
 
 const dirnameLike = (value: string): string => {

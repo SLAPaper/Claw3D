@@ -35,6 +35,11 @@ function createConfig() {
 
   const HERMES_API_URL = (process.env.HERMES_API_URL || "http://localhost:8642").replace(/\/$/, "");
   const HERMES_API_KEY = process.env.HERMES_API_KEY || "";
+  const HERMES_PROFILE_API_URL = (process.env.HERMES_PROFILE_API_URL || "").trim().replace(/\/$/, "");
+  const HERMES_DASHBOARD_SESSION_TOKEN = (process.env.HERMES_DASHBOARD_SESSION_TOKEN || "").trim();
+  const HERMES_PROFILE_API_TOKEN = (
+    process.env.HERMES_PROFILE_API_TOKEN || HERMES_DASHBOARD_SESSION_TOKEN
+  ).trim();
   const ADAPTER_PORT = parseInt(process.env.HERMES_ADAPTER_PORT || "18789", 10);
   const HERMES_MODEL = process.env.HERMES_MODEL || "hermes";
   const HERMES_AGENT_NAME = process.env.HERMES_AGENT_NAME || "Hermes";
@@ -78,6 +83,9 @@ Be concise in your responses to the user; do the heavy lifting via tool calls.`;
   return {
     HERMES_API_URL,
     HERMES_API_KEY,
+    HERMES_PROFILE_API_URL,
+    HERMES_PROFILE_API_TOKEN,
+    HERMES_DASHBOARD_SESSION_TOKEN,
     ADAPTER_PORT,
     HERMES_MODEL,
     HERMES_AGENT_NAME,

@@ -14,11 +14,26 @@ Claw3D-compatible WebSocket adapter.
 
 ```text
 Browser UI <-> Studio runtime/client <-> Hermes gateway adapter <-> Hermes HTTP API
+                                                        \-> Hermes Dashboard profile API
 ```
 
 The frontend keeps using the Claw3D gateway protocol. The Hermes adapter
 translates that protocol into Hermes HTTP calls and streams the results
 back as gateway events.
+
+Agent roster management now prefers Hermes native profiles. When
+`HERMES_PROFILE_API_URL` is configured, `agents.list` is synthesized from
+`GET /api/profiles`, explicit `agents.create/update/delete` calls map to the
+Dashboard profile CRUD endpoints, and each listed agent includes
+`metadata.hermesProfileName`. The default Hermes profile is still exposed as
+agent id `hermes` for the main session; named profiles use the profile name as
+their agent id.
+
+The active profile-native rollout plan is documented in
+[`docs/hermes-profile-native-iteration-plan.md`](hermes-profile-native-iteration-plan.md).
+That plan is intentionally staged: Iteration 1 covers profile-backed agents,
+while sessions/chat, cron, and skills/toolsets are separate follow-up
+iterations.
 
 ## Quick start
 
@@ -39,11 +54,17 @@ NEXT_PUBLIC_GATEWAY_URL=ws://localhost:18789
 
 HERMES_API_URL=http://localhost:8642
 HERMES_API_KEY=
+HERMES_PROFILE_API_URL=http://127.0.0.1:9119
+HERMES_PROFILE_API_TOKEN=
 HERMES_ADAPTER_PORT=18789
 HERMES_MODEL=hermes
 HERMES_AGENT_NAME=Hermes
 HERMES_ADAPTER_STATE_DIR=
 ```
+
+`HERMES_PROFILE_API_TOKEN` is sent to the Dashboard API as
+`X-Hermes-Session-Token`. If it is unset, the adapter falls back to
+`HERMES_DASHBOARD_SESSION_TOKEN`.
 
 ### 3. Start Claw3D and the adapter
 
@@ -86,6 +107,8 @@ The adapter currently supports the Claw3D surfaces needed for normal
 office use:
 
 - Agent listing, creation, update, and deletion
+- Profile-backed agent roster when the Hermes Dashboard profile API is
+  configured
 - Session listing, preview, patch, reset, and history lookup
 - Chat send, targeted abort, and run wait
 - Workspace-backed `agents.files.get/list/set` with bootstrap agent brain files
@@ -111,6 +134,11 @@ The main Hermes agent acts as an orchestrator with these tools:
 Sub-agents appear in the office as separate characters and keep their
 own conversation state.
 
+These orchestration tools intentionally remain adapter-owned compatibility
+tools in this iteration. `spawn_agent` does not automatically create or delete
+real Hermes profiles; only explicit gateway/UI `agents.create/update/delete`
+calls touch Dashboard profile CRUD.
+
 ## Production-readiness notes
 
 This adapter includes the fixes that blocked the original Hermes PR:
@@ -135,18 +163,26 @@ provider feasible as a follow-up without reworking the whole UI again.
 
 ## Persistence
 
-Adapter-owned gateway state is stored at:
+Adapter-owned gateway overlay state is stored at:
 
 ```text
 ~/.hermes/claw3d-adapter-state.json
 ```
 
-That state includes Claw3D-visible agents, session settings, adapter
-config, stored-only exec approvals metadata, skill enablement flags, and cron jobs. Set
+That state includes session settings, adapter config, stored-only exec
+approvals metadata, skill enablement flags, cron jobs, and any adapter-owned
+compatibility agents. When the Dashboard profile API is available, Hermes
+profiles are the primary source for `agents.list`; the adapter state remains
+the compatibility overlay for Claw3D-only fields such as heartbeat settings,
+stored-only permissions, and UI overrides. Set
 `HERMES_ADAPTER_STATE_DIR` to store the same
 `claw3d-adapter-state.json` file under a different directory. If the
 state file contains corrupt JSON, the adapter logs a warning and falls
 back to default state without deleting the bad file.
+
+If the profile API is configured but unavailable, the adapter logs
+`Hermes profile API unavailable; using compat fallback` and falls back to the
+adapter-owned registry for listing/config compatibility.
 
 Conversation history is stored at:
 
@@ -168,6 +204,10 @@ do not already exist.
 - Exec approvals, command permissions, tool policy, and sandbox settings are
   stored as compatibility metadata only. Hermes mode does not enforce them or
   emit real exec approval request/resolved events.
+- `sessions.*`, `chat.send`, `cron.*`, skills, and toolsets still use the
+  current compatibility layers. Planned follow-ups are to connect sessions/chat
+  to Hermes native session/run APIs, cron to profile-aware Dashboard cron jobs,
+  and skills/toolsets to profile directories or Hermes native endpoints.
 - This path is intended to get Hermes working reliably now while the
   broader runtime-provider architecture continues to mature
 
