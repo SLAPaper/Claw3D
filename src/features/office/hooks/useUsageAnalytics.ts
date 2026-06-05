@@ -120,10 +120,19 @@ type UsageSessionsResult = {
   sessions?: unknown[];
   totals?: unknown;
   aggregates?: unknown;
+  metadata?: unknown;
 };
 
 type UsageCostResult = {
   daily?: unknown[];
+  metadata?: unknown;
+};
+
+export type UsageAnalyticsMetadata = {
+  runtime: string | null;
+  tokenSource: "metadata" | "estimated" | "mixed" | "none";
+  costSource: "metadata" | "mixed" | "none";
+  legacyDateSource: "message-created-at" | "history-file-mtime" | "mixed";
 };
 
 const EMPTY_TOTALS: UsageTotals = {
@@ -149,6 +158,13 @@ const EMPTY_MESSAGE_COUNTS: UsageMessageCounts = {
   errors: 0,
 };
 
+const EMPTY_METADATA: UsageAnalyticsMetadata = {
+  runtime: null,
+  tokenSource: "none",
+  costSource: "none",
+  legacyDateSource: "message-created-at",
+};
+
 const asRecord = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -165,6 +181,50 @@ const asString = (value: unknown): string | null => {
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
 };
+
+const normalizeTokenSource = (value: unknown): UsageAnalyticsMetadata["tokenSource"] => {
+  return value === "metadata" || value === "estimated" || value === "mixed" ? value : "none";
+};
+
+const normalizeCostSource = (value: unknown): UsageAnalyticsMetadata["costSource"] => {
+  return value === "metadata" || value === "mixed" ? value : "none";
+};
+
+const normalizeLegacyDateSource = (value: unknown): UsageAnalyticsMetadata["legacyDateSource"] => {
+  return value === "history-file-mtime" || value === "mixed" ? value : "message-created-at";
+};
+
+const normalizeUsageMetadata = (value: unknown): UsageAnalyticsMetadata => {
+  const record = asRecord(value);
+  if (!record) return { ...EMPTY_METADATA };
+  return {
+    runtime: asString(record.runtime),
+    tokenSource: normalizeTokenSource(record.tokenSource),
+    costSource: normalizeCostSource(record.costSource),
+    legacyDateSource: normalizeLegacyDateSource(record.legacyDateSource),
+  };
+};
+
+const mergeSource = <T extends string>(left: T, right: T, emptyValue: T): T => {
+  const sources = new Set([left, right].filter((value) => value !== emptyValue));
+  if (sources.size === 0) return emptyValue;
+  if (sources.size === 1) return [...sources][0] as T;
+  return "mixed" as T;
+};
+
+const mergeUsageMetadata = (
+  usageMetadata: UsageAnalyticsMetadata,
+  costMetadata: UsageAnalyticsMetadata
+): UsageAnalyticsMetadata => ({
+  runtime: usageMetadata.runtime ?? costMetadata.runtime,
+  tokenSource: mergeSource(usageMetadata.tokenSource, costMetadata.tokenSource, "none"),
+  costSource: mergeSource(usageMetadata.costSource, costMetadata.costSource, "none"),
+  legacyDateSource: mergeSource(
+    usageMetadata.legacyDateSource,
+    costMetadata.legacyDateSource,
+    "message-created-at"
+  ),
+});
 
 const normalizeTotals = (value: unknown): UsageTotals => {
   const record = asRecord(value);
@@ -382,6 +442,7 @@ export const useUsageAnalytics = ({
   const [sessions, setSessions] = useState<UsageSessionRow[]>([]);
   const [costDaily, setCostDaily] = useState<CostDailyRow[]>([]);
   const [serverTotals, setServerTotals] = useState<UsageTotals | null>(null);
+  const [metadata, setMetadata] = useState<UsageAnalyticsMetadata>(EMPTY_METADATA);
   const [lastRefreshedAt, setLastRefreshedAt] = useState<number | null>(null);
   const agentsRef = useRef(agents);
 
@@ -394,6 +455,7 @@ export const useUsageAnalytics = ({
       setSessions([]);
       setCostDaily([]);
       setServerTotals(null);
+      setMetadata(EMPTY_METADATA);
       return;
     }
     setLoading(true);
@@ -437,12 +499,17 @@ export const useUsageAnalytics = ({
       setSessions(normalizedSessions);
       setCostDaily(normalizeCostDaily(costResult.daily));
       setServerTotals(asRecord(usageResult.totals) ? normalizeTotals(usageResult.totals) : null);
+      setMetadata(mergeUsageMetadata(
+        normalizeUsageMetadata(usageResult.metadata),
+        normalizeUsageMetadata(costResult.metadata)
+      ));
       setLastRefreshedAt(Date.now());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load usage analytics.");
       setSessions([]);
       setCostDaily([]);
       setServerTotals(null);
+      setMetadata(EMPTY_METADATA);
     } finally {
       setLoading(false);
     }
@@ -581,6 +648,7 @@ export const useUsageAnalytics = ({
     costDaily,
     lastRefreshedAt,
     totals: aggregates.totals,
+    metadata,
     aggregates,
     budgetAlerts,
   };

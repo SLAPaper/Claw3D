@@ -3,7 +3,7 @@
 const path = require("path");
 
 function createOrchestration(ctx) {
-  const { config, state, workspaceFiles, hermes, utils, events } = ctx;
+  const { config, state, workspaceFiles, hermes, usage, utils, events } = ctx;
   const { randomId, sanitizeErrorMessage } = utils;
 
   const TEAM_TOOLS = [
@@ -168,6 +168,7 @@ function createOrchestration(ctx) {
     const messages = [...systemMsg, ...contextHistory, { role: "user", content: message }];
 
     const subRunId = randomId();
+    const startedAtMs = Date.now();
     let seqCounter = 0;
     const emitSub = (stateName, extra) => {
       events.broadcastEvent({
@@ -189,8 +190,26 @@ function createOrchestration(ctx) {
       responseText = result.textContent;
 
       if (agent.settings.continuity !== false) {
-        history.push({ role: "user", content: message });
-        history.push({ role: "assistant", content: responseText });
+        const completedAtMs = Date.now();
+        const resolvedModel = result.resolvedModel || model;
+        history.push(usage.createHistoryMessage({
+          role: "user",
+          content: message,
+          createdAtMs: startedAtMs,
+          runId: subRunId,
+          model: resolvedModel,
+          modelProvider: "hermes",
+        }));
+        history.push(usage.createHistoryMessage({
+          role: "assistant",
+          content: responseText,
+          createdAtMs: completedAtMs,
+          runId: subRunId,
+          model: resolvedModel,
+          modelProvider: "hermes",
+          durationMs: completedAtMs - startedAtMs,
+          usage: usage.normalizeHermesUsage(result.usage),
+        }));
         state.saveHistoryToDisk();
       }
 
@@ -294,7 +313,7 @@ function createOrchestration(ctx) {
     }
   }
 
-  async function runAgenticLoop({ sessionKey, agentId, userMessage, model, tools, emitDelta, abortCheck, sendEvent }) {
+  async function runAgenticLoop({ sessionKey, agentId, userMessage, model, tools, emitDelta, abortCheck, sendEvent, runId, startedAtMs }) {
     const agent = state.agentRegistry.get(agentId);
     const systemMsg = agent?.systemPrompt ? [{ role: "system", content: agent.systemPrompt }] : [];
     const history = state.getHistory(sessionKey);
@@ -302,16 +321,24 @@ function createOrchestration(ctx) {
     let messages = [...systemMsg, ...contextHistory, { role: "user", content: userMessage }];
 
     let finalText = "";
+    let accumulatedUsage = null;
+    let resolvedModel = model;
     let round = 0;
 
     while (round < config.MAX_TOOL_ROUNDS) {
       round++;
-      const { textContent, toolCalls, finishReason } = await hermes.streamOneTurn(
+      const result = await hermes.streamOneTurn(
         messages,
         model,
         tools,
         emitDelta,
         abortCheck
+      );
+      const { textContent, toolCalls, finishReason } = result;
+      resolvedModel = result.resolvedModel || resolvedModel;
+      accumulatedUsage = usage.mergeUsageRecords(
+        accumulatedUsage,
+        usage.normalizeHermesUsage(result.usage)
       );
 
       if (finishReason === "tool_calls" && toolCalls.length > 0) {
@@ -344,8 +371,25 @@ function createOrchestration(ctx) {
     }
 
     if (agent?.settings?.continuity !== false) {
-      history.push({ role: "user", content: userMessage });
-      history.push({ role: "assistant", content: finalText });
+      const completedAtMs = Date.now();
+      history.push(usage.createHistoryMessage({
+        role: "user",
+        content: userMessage,
+        createdAtMs: startedAtMs || completedAtMs,
+        runId,
+        model: resolvedModel,
+        modelProvider: "hermes",
+      }));
+      history.push(usage.createHistoryMessage({
+        role: "assistant",
+        content: finalText,
+        createdAtMs: completedAtMs,
+        runId,
+        model: resolvedModel,
+        modelProvider: "hermes",
+        durationMs: startedAtMs ? completedAtMs - startedAtMs : 0,
+        usage: accumulatedUsage,
+      }));
       state.saveHistoryToDisk();
     }
 

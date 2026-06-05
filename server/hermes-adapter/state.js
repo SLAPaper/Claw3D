@@ -122,6 +122,7 @@ function createState(config, utils) {
   let adapterConfig = createDefaultConfig();
   let execApprovalsFile = createDefaultExecApprovalsFile();
   const agentRegistry = new Map([[config.AGENT_ID, createDefaultAgent()]]);
+  let historyLoadedFromDisk = false;
 
   function getConfigAgentList(sourceConfig = adapterConfig) {
     const agents = isPlainObject(sourceConfig?.agents) ? sourceConfig.agents : {};
@@ -329,6 +330,8 @@ function createState(config, utils) {
   }
 
   function loadHistoryFromDisk() {
+    if (historyLoadedFromDisk) return;
+    historyLoadedFromDisk = true;
     try {
       if (fs.existsSync(config.HISTORY_FILE)) {
         const raw = fs.readFileSync(config.HISTORY_FILE, "utf8");

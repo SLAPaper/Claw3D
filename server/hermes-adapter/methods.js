@@ -1,7 +1,7 @@
 "use strict";
 
 function createHandleMethod(ctx) {
-  const { config, state, workspaceFiles, hermes, skills, orchestration, scheduler, utils } = ctx;
+  const { config, state, workspaceFiles, hermes, skills, usage, orchestration, scheduler, utils } = ctx;
   const {
     cloneJson,
     randomId,
@@ -186,6 +186,8 @@ function createHandleMethod(ctx) {
           emitDelta: onTextDelta,
           abortCheck: () => aborted,
           sendEvent,
+          runId,
+          startedAtMs,
         });
 
         if (aborted) {
@@ -470,6 +472,9 @@ function createHandleMethod(ctx) {
         return resOk(id, { ts: Date.now(), previews });
       }
 
+      case "sessions.usage":
+        return resOk(id, usage.buildSessionsUsage(p));
+
       case "sessions.patch": {
         const key = typeof p.key === "string" ? p.key : config.MAIN_SESSION_KEY;
         const current = state.sessionSettings.get(key) || {};
@@ -700,6 +705,9 @@ function createHandleMethod(ctx) {
         } catch {
           return resOk(id, { models: [{ id: config.HERMES_MODEL, name: config.HERMES_MODEL }] });
         }
+
+      case "usage.cost":
+        return resOk(id, usage.buildCostUsage(p));
 
       case "tasks.list": {
         const includeArchived = p.includeArchived !== false;

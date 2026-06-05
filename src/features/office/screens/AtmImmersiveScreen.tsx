@@ -73,6 +73,9 @@ export function AtmImmersiveScreen(props: OfficeUsageAnalyticsParams) {
     () => recentCostDaily.reduce((max, entry) => Math.max(max, entry.totalCost), 0),
     [recentCostDaily],
   );
+  const showHermesEstimatedUsageNotice =
+    usage.metadata.runtime === "hermes" &&
+    (usage.metadata.tokenSource === "estimated" || usage.metadata.tokenSource === "mixed");
   const overviewCards = useMemo(
     () => [
       { label: "Total Spend", value: formatCurrency(usage.totals.totalCost) },
@@ -220,6 +223,11 @@ export function AtmImmersiveScreen(props: OfficeUsageAnalyticsParams) {
             <div className="mt-4 inline-flex items-center rounded-full border border-[#7cffef]/20 bg-black/20 px-4 py-2 text-[13px] uppercase tracking-[0.24em] text-[#bafff7]/85">
               USD equivalent {formatCurrency(usage.totals.totalCost)}
             </div>
+            {showHermesEstimatedUsageNotice ? (
+              <div className="mt-4 max-w-[520px] rounded-2xl border border-amber-300/20 bg-amber-300/10 px-4 py-3 text-[12px] uppercase tracking-[0.16em] text-amber-100/85">
+                Hermes token counts are estimated from conversation text. Cost values stay at $0.00 unless Hermes returns billing metadata.
+              </div>
+            ) : null}
           </div>
           <div className="w-[320px] rounded-[24px] border border-[#7dfff0]/18 bg-black/22 p-5 shadow-[0_18px_50px_rgba(0,0,0,0.34)]">
             <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.24em] text-[#88fff1]/62">

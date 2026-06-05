@@ -86,14 +86,14 @@ function createStartAdapter(ctx, handleMethod) {
               features: {
                 methods: [
                   "agents.list","agents.create","agents.delete","agents.update",
-                  "sessions.list","sessions.preview","sessions.patch","sessions.reset",
+                  "sessions.list","sessions.preview","sessions.patch","sessions.reset","sessions.usage",
                   "chat.send","chat.abort","chat.history","agent.wait",
                   "status","config.get","config.set","config.patch",
                   "agents.files.get","agents.files.list","agents.files.set",
                   "exec.approvals.get","exec.approvals.set","exec.approval.resolve",
                   "wake","skills.status","skills.install","skills.update","models.list",
                   "tasks.list","tasks.create","tasks.update","tasks.delete",
-                  "cron.list","cron.add","cron.remove","cron.patch","cron.run",
+                  "cron.list","cron.add","cron.remove","cron.patch","cron.run","usage.cost",
                 ],
                 events: ["chat","presence","heartbeat","cron","playbook_triggered","task_status_changed"],
               },

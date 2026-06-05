@@ -159,6 +159,9 @@ export function AnalyticsPanel({
   const dailyChartMax = useMemo(() => {
     return usage.costDaily.reduce((max, entry) => Math.max(max, entry.totalCost), 0);
   }, [usage.costDaily]);
+  const showHermesEstimatedUsageNotice =
+    usage.metadata.runtime === "hermes" &&
+    (usage.metadata.tokenSource === "estimated" || usage.metadata.tokenSource === "mixed");
 
   const alertBannerClass =
     usage.budgetAlerts.some((alert) => alert.severity === "danger")
@@ -200,6 +203,13 @@ export function AnalyticsPanel({
         {usage.error ? (
           <div className="mt-3 rounded border border-rose-500/30 bg-rose-500/10 px-3 py-2 font-mono text-[11px] text-rose-100">
             {usage.error}
+          </div>
+        ) : null}
+
+        {showHermesEstimatedUsageNotice ? (
+          <div className="mt-3 rounded border border-amber-500/25 bg-amber-500/10 px-3 py-2 font-mono text-[11px] text-amber-100">
+            <div>Hermes token counts are estimated from conversation text.</div>
+            <div>Cost values stay at $0.00 unless Hermes returns billing metadata.</div>
           </div>
         ) : null}
 

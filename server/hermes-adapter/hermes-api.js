@@ -180,7 +180,7 @@ function createHermesApi(config, utils) {
           };
         })
       : [];
-    return { textContent, toolCalls, finishReason, resolvedModel };
+    return { textContent, toolCalls, finishReason, resolvedModel, usage: payload?.usage };
   }
 
   async function streamOneTurn(messages, model, tools, onTextDelta, abortCheck) {
@@ -200,6 +200,7 @@ function createHermesApi(config, utils) {
 
     let textContent = "";
     let finishReason = "stop";
+    let usage = null;
     const toolCallAccum = {};
     let buffer = "";
 
@@ -218,6 +219,9 @@ function createHermesApi(config, utils) {
           if (!trimmed.startsWith("data: ")) continue;
           try {
             const data = JSON.parse(trimmed.slice(6));
+            if (data && typeof data.usage === "object" && data.usage) {
+              usage = data.usage;
+            }
             const choice = data?.choices?.[0];
             if (!choice) continue;
             if (typeof choice.finish_reason === "string" && choice.finish_reason) {
@@ -262,10 +266,12 @@ function createHermesApi(config, utils) {
         textContent: fallback.textContent,
         toolCalls: fallback.toolCalls,
         finishReason: fallback.finishReason,
+        resolvedModel: fallback.resolvedModel || resolvedModel,
+        usage: fallback.usage,
       };
     }
 
-    return { textContent, toolCalls, finishReason };
+    return { textContent, toolCalls, finishReason, resolvedModel, usage };
   }
 
   return {
