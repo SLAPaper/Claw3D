@@ -1,7 +1,7 @@
 "use strict";
 
 function createHandleMethod(ctx) {
-  const { config, state, workspaceFiles, hermes, skills, orchestration, utils } = ctx;
+  const { config, state, workspaceFiles, hermes, skills, orchestration, scheduler, utils } = ctx;
   const {
     cloneJson,
     randomId,
@@ -115,22 +115,7 @@ function createHandleMethod(ctx) {
   }
 
   function resolveHeartbeatBlock(agentId) {
-    const adapterConfig = state.getAdapterConfig();
-    const agents = utils.isPlainObject(adapterConfig.agents) ? adapterConfig.agents : {};
-    const defaults = utils.isPlainObject(agents.defaults) && utils.isPlainObject(agents.defaults.heartbeat)
-      ? agents.defaults.heartbeat
-      : {};
-    const agentEntry = state.getConfigAgentList(adapterConfig).find((entry) => entry.id === agentId) || {};
-    const override = utils.isPlainObject(agentEntry.heartbeat) ? agentEntry.heartbeat : {};
-    const merged = { ...defaults, ...override };
-    const every = trimString(merged.every);
-    const loweredEvery = every.toLowerCase();
-    const enabled = Boolean(every && loweredEvery !== "disabled" && loweredEvery !== "off" && loweredEvery !== "none");
-    return {
-      agentId,
-      enabled,
-      ...(every ? { every } : {}),
-    };
+    return scheduler.buildHeartbeatStatus(agentId);
   }
 
   function buildHeartbeatStatusAgents() {
@@ -250,6 +235,52 @@ function createHandleMethod(ctx) {
     const text = trimString(input.text);
     const match = text.match(/\(([^)]+)\)/);
     return match?.[1]?.trim() || config.AGENT_ID;
+  }
+
+  function runHeartbeat({ agentId, text, runId, sendEvent }) {
+    const sessionKey = `agent:${agentId}:heartbeat`;
+    const heartbeatRunId = runId || `heartbeat:${agentId}:${randomId()}`;
+    const message = trimString(text) || `Claw3D heartbeat trigger (${agentId}).`;
+    const resolved = scheduler.resolveHeartbeatConfig(agentId);
+    const startedAtMs = Date.now();
+    const existingState = state.heartbeatStateByAgentId.get(agentId) || {};
+    state.heartbeatStateByAgentId.set(agentId, { ...existingState, runningAtMs: startedAtMs });
+    state.persistAdapterState();
+    sendEvent({
+      type: "event",
+      event: "heartbeat",
+      payload: { action: "started", agentId, sessionKey, runId: heartbeatRunId, text: message, timestamp: startedAtMs },
+    });
+    const result = startChatRun({
+      sessionKey,
+      userMessage: message,
+      runId: heartbeatRunId,
+      sendEvent,
+      onDone(outcome) {
+        const current = state.heartbeatStateByAgentId.get(agentId) || {};
+        const { runningAtMs: _runningAtMs, ...restState } = current;
+        const lastStatus = outcome.status === "ok" ? "ok" : (outcome.status === "aborted" ? "skipped" : "error");
+        const nextState = {
+          ...restState,
+          lastRunAtMs: Date.now(),
+          lastStatus,
+          lastDurationMs: outcome.durationMs,
+        };
+        if (resolved.everyMs && lastStatus === "ok") {
+          nextState.nextRunAtMs = Date.now() + resolved.everyMs;
+        }
+        if (outcome.errorMessage) nextState.lastError = outcome.errorMessage;
+        else delete nextState.lastError;
+        state.heartbeatStateByAgentId.set(agentId, nextState);
+        state.persistAdapterState();
+        sendEvent({
+          type: "event",
+          event: "heartbeat",
+          payload: { action: "finished", agentId, sessionKey, runId: heartbeatRunId, status: lastStatus, timestamp: Date.now() },
+        });
+      },
+    });
+    return { ok: result.status !== "no-op", runId: heartbeatRunId };
   }
 
   return async function handleMethod(method, params, id, sendEvent) {
@@ -594,16 +625,12 @@ function createHandleMethod(ctx) {
         if (!state.agentRegistry.has(agentId)) {
           return resErr(id, "not_found", `Agent not found: ${agentId}`);
         }
-        const sessionKey = `agent:${agentId}:heartbeat`;
-        const runId = `heartbeat:${agentId}:${randomId()}`;
-        const text = trimString(p.text) || `Claw3D heartbeat trigger (${agentId}).`;
-        sendEvent({
-          type: "event",
-          event: "heartbeat",
-          payload: { action: "started", agentId, sessionKey, runId, text, timestamp: Date.now() },
-        });
-        const result = startChatRun({ sessionKey, userMessage: text, runId, sendEvent });
-        return resOk(id, { ok: result.status !== "no-op", runId });
+        return resOk(id, runHeartbeat({
+          agentId,
+          text: p.text,
+          runId: `heartbeat:${agentId}:${randomId()}`,
+          sendEvent,
+        }));
       }
 
       case "skills.status": {
@@ -727,7 +754,7 @@ function createHandleMethod(ctx) {
       case "cron.add": {
         const jobId = randomId();
         const agentId = typeof p.agentId === "string" && p.agentId.trim() ? p.agentId.trim() : config.AGENT_ID;
-        const job = {
+        const job = scheduler.withCronNextRun({
           id: jobId,
           name: typeof p.name === "string" ? p.name : "Cron Job",
           agentId,
@@ -741,7 +768,7 @@ function createHandleMethod(ctx) {
           wakeMode: p.wakeMode || "next-heartbeat",
           payload: p.payload || { kind: "systemEvent", text: "tick" },
           state: {},
-        };
+        });
         state.cronJobs.set(jobId, job);
         state.persistAdapterState();
         return resOk(id, job);
@@ -763,16 +790,28 @@ function createHandleMethod(ctx) {
         if (p.name !== undefined) updated.name = String(p.name);
         if (p.schedule !== undefined) updated.schedule = p.schedule;
         if (p.payload !== undefined) updated.payload = p.payload;
+        if (p.state !== undefined && utils.isPlainObject(p.state)) updated.state = cloneJson(p.state);
         updated.updatedAtMs = Date.now();
-        state.cronJobs.set(jobId, updated);
+        const normalized = scheduler.withCronNextRun(updated);
+        state.cronJobs.set(jobId, normalized);
         state.persistAdapterState();
-        return resOk(id, { ok: true, job: updated });
+        return resOk(id, { ok: true, job: normalized });
       }
 
       case "cron.run": {
         const jobId = typeof p.id === "string" ? p.id : "";
-        const job = state.cronJobs.get(jobId);
+        let job = state.cronJobs.get(jobId);
         if (!job) return resOk(id, { ok: false });
+        job = scheduler.withCronNextRun(job);
+        state.cronJobs.set(jobId, job);
+        const mode = trimString(p.mode) || "force";
+        if (mode === "auto") {
+          const reason = scheduler.getCronAutoSkipReason(job);
+          if (reason) {
+            state.persistAdapterState();
+            return resOk(id, { ok: true, ran: false, reason });
+          }
+        }
         const runId = `cron:${jobId}:${randomId()}`;
         const runningAtMs = Date.now();
         const running = { ...job, state: { ...(job.state || {}), runningAtMs } };
@@ -782,6 +821,20 @@ function createHandleMethod(ctx) {
           type: "event",
           event: "cron",
           payload: { action: "started", jobId, runId, status: "running", summary: running },
+        });
+        sendEvent({
+          type: "event",
+          event: "playbook_triggered",
+          payload: {
+            taskId: `cron:${jobId}`,
+            jobId,
+            playbookJobId: jobId,
+            agentId: running.agentId || config.AGENT_ID,
+            runId,
+            title: running.name || "Cron Job",
+            status: "in_progress",
+            occurredAt: new Date().toISOString(),
+          },
         });
         startChatRun({
           sessionKey: job.sessionKey || `agent:${job.agentId || config.AGENT_ID}:${config.MAIN_KEY}`,
@@ -803,12 +856,31 @@ function createHandleMethod(ctx) {
             if (outcome.errorMessage) nextState.lastError = outcome.errorMessage;
             else delete nextState.lastError;
             const done = { ...current, state: nextState };
-            state.cronJobs.set(jobId, done);
+            const normalizedDone = lastStatus === "ok" ? scheduler.withCronNextRun(done) : done;
+            if (lastStatus === "ok" && current.deleteAfterRun) {
+              state.cronJobs.delete(jobId);
+            } else {
+              state.cronJobs.set(jobId, normalizedDone);
+            }
             state.persistAdapterState();
             sendEvent({
               type: "event",
               event: "cron",
-              payload: { action: "finished", jobId, runId, status: lastStatus, summary: done },
+              payload: { action: "finished", jobId, runId, status: lastStatus, summary: normalizedDone },
+            });
+            sendEvent({
+              type: "event",
+              event: "task_status_changed",
+              payload: {
+                taskId: `cron:${jobId}`,
+                jobId,
+                playbookJobId: jobId,
+                agentId: normalizedDone.agentId || config.AGENT_ID,
+                runId,
+                title: normalizedDone.name || "Cron Job",
+                status: lastStatus === "ok" ? "review" : (lastStatus === "skipped" ? "blocked" : "blocked"),
+                occurredAt: new Date().toISOString(),
+              },
             });
           },
         });

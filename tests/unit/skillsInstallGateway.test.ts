@@ -4,6 +4,60 @@ import type { GatewayClient } from "@/lib/gateway/GatewayClient";
 import { installPackagedSkillViaGatewayAgent } from "@/lib/skills/install-gateway";
 
 describe("skills install gateway", () => {
+  it("uses direct skills.install for Hermes gateways that advertise the method", async () => {
+    const call = vi.fn(async (method: string) => {
+      if (method === "skills.install") {
+        return {
+          installed: true,
+          installedPath: "/home/hermes/workspace-demo/skills/task-manager",
+          source: "openclaw-workspace",
+          skillKey: "task-manager",
+          workspaceDir: "/home/hermes/workspace-demo",
+          filesWritten: 2,
+        };
+      }
+      throw new Error(`Unexpected method: ${method}`);
+    });
+
+    const result = await installPackagedSkillViaGatewayAgent({
+      client: {
+        call,
+        getLastHello: () => ({
+          type: "hello-ok",
+          protocol: 3,
+          adapterType: "hermes",
+          features: { methods: ["skills.install"] },
+        }),
+      } as unknown as GatewayClient,
+      request: {
+        packageId: "task-manager",
+        source: "openclaw-workspace",
+        workspaceDir: "/home/hermes/workspace-demo",
+        managedSkillsDir: "/home/hermes/.hermes/skills",
+        agentId: "agent-1",
+        agentName: "Agent One",
+      },
+    });
+
+    expect(result).toEqual({
+      installed: true,
+      installedPath: "/home/hermes/workspace-demo/skills/task-manager",
+      source: "openclaw-workspace",
+      skillKey: "task-manager",
+      workspaceDir: "/home/hermes/workspace-demo",
+      filesWritten: 2,
+    });
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(call).toHaveBeenCalledWith("skills.install", {
+      packageId: "task-manager",
+      source: "openclaw-workspace",
+      workspaceDir: "/home/hermes/workspace-demo",
+      managedSkillsDir: "/home/hermes/.hermes/skills",
+      agentId: "agent-1",
+      agentName: "Agent One",
+    });
+  });
+
   it("creates a temporary installer agent and installs a workspace skill", async () => {
     const call = vi.fn(async (method: string) => {
       if (method === "agents.create") {

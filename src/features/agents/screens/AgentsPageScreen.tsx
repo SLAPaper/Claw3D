@@ -1682,6 +1682,10 @@ const AgentsPageScreen = () => {
                             cronCreateBusy={settingsMutationController.cronCreateBusy}
                             cronRunBusyJobId={settingsMutationController.cronRunBusyJobId}
                             cronDeleteBusyJobId={settingsMutationController.cronDeleteBusyJobId}
+                            heartbeats={settingsMutationController.settingsHeartbeats}
+                            heartbeatsLoading={settingsMutationController.settingsHeartbeatsLoading}
+                            heartbeatsError={settingsMutationController.settingsHeartbeatsError}
+                            heartbeatRunBusy={settingsMutationController.heartbeatRunBusy}
                             onCreateCronJob={(draft) =>
                               settingsMutationController.handleCreateCronJob(inspectSidebarAgent.agentId, draft)
                             }
@@ -1690,6 +1694,9 @@ const AgentsPageScreen = () => {
                             }
                             onDeleteCronJob={(jobId) =>
                               settingsMutationController.handleDeleteCronJob(inspectSidebarAgent.agentId, jobId)
+                            }
+                            onRunHeartbeat={() =>
+                              settingsMutationController.handleRunHeartbeat(inspectSidebarAgent.agentId)
                             }
                             controlUiUrl={selectedAdapterType === "openclaw" ? controlUiUrl : null}
                             adapterType={selectedAdapterType}

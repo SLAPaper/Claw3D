@@ -20,10 +20,11 @@ function createEvents() {
 }
 
 function createStartAdapter(ctx, handleMethod) {
-  const { config, events, utils, state } = ctx;
+  const { config, events, utils, state, scheduler } = ctx;
   const { randomId, sanitizeErrorMessage, resErr } = utils;
 
   return function startAdapter() {
+    let schedulerHandle = null;
     const httpServer = http.createServer((req, res) => {
       res.writeHead(200, { "Content-Type": "text/plain" });
       res.end("Hermes Gateway Adapter – OK\n");
@@ -94,7 +95,7 @@ function createStartAdapter(ctx, handleMethod) {
                   "tasks.list","tasks.create","tasks.update","tasks.delete",
                   "cron.list","cron.add","cron.remove","cron.patch","cron.run",
                 ],
-                events: ["chat","presence","heartbeat","cron"],
+                events: ["chat","presence","heartbeat","cron","playbook_triggered","task_status_changed"],
               },
               snapshot: {
                 health: { agents: allAgents, defaultAgentId: config.AGENT_ID },
@@ -130,6 +131,7 @@ function createStartAdapter(ctx, handleMethod) {
     });
 
     httpServer.listen(config.ADAPTER_PORT, "127.0.0.1", () => {
+      schedulerHandle = scheduler ? scheduler.start(handleMethod) : null;
       console.log(`\n[hermes-adapter] ✓ Listening on ws://localhost:${config.ADAPTER_PORT}`);
       console.log(`[hermes-adapter] ✓ Forwarding to Hermes API at ${config.HERMES_API_URL}`);
       console.log(`[hermes-adapter] ✓ Model: ${config.HERMES_MODEL}`);
@@ -145,6 +147,28 @@ function createStartAdapter(ctx, handleMethod) {
       }
       process.exit(1);
     });
+
+    httpServer.on("close", () => {
+      schedulerHandle?.stop?.();
+    });
+
+    return {
+      httpServer,
+      wss,
+      stop() {
+        schedulerHandle?.stop?.();
+        try {
+          wss.close();
+        } catch {
+          // Best-effort shutdown.
+        }
+        try {
+          httpServer.close();
+        } catch {
+          // Best-effort shutdown.
+        }
+      },
+    };
   };
 }
 

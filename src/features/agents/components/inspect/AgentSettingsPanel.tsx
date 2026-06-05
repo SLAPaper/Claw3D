@@ -24,6 +24,7 @@ import {
 import type { AgentState } from "@/features/agents/state/store";
 import type { CronCreateDraft, CronCreateTemplateId } from "@/lib/cron/createPayloadBuilder";
 import { formatCronPayload, formatCronSchedule, type CronJobSummary } from "@/lib/cron/types";
+import type { AgentHeartbeatSummary } from "@/lib/gateway/agentConfig";
 import type { SkillStatusReport } from "@/lib/skills/types";
 import type { StudioGatewayAdapterType } from "@/lib/studio/settings";
 
@@ -45,6 +46,11 @@ export type AgentSettingsPanelProps = {
   cronDeleteBusyJobId: string | null;
   onRunCronJob: (jobId: string) => Promise<void> | void;
   onDeleteCronJob: (jobId: string) => Promise<void> | void;
+  heartbeats?: AgentHeartbeatSummary[];
+  heartbeatsLoading?: boolean;
+  heartbeatsError?: string | null;
+  heartbeatRunBusy?: boolean;
+  onRunHeartbeat?: () => Promise<void> | void;
   cronCreateBusy?: boolean;
   onCreateCronJob?: (draft: CronCreateDraft) => Promise<void> | void;
   controlUiUrl?: string | null;
@@ -247,6 +253,11 @@ export const AgentSettingsPanel = ({
   cronDeleteBusyJobId,
   onRunCronJob,
   onDeleteCronJob,
+  heartbeats = [],
+  heartbeatsLoading = false,
+  heartbeatsError = null,
+  heartbeatRunBusy = false,
+  onRunHeartbeat = () => {},
   cronCreateBusy = false,
   onCreateCronJob = () => {},
   controlUiUrl = null,
@@ -807,6 +818,63 @@ export const AgentSettingsPanel = ({
                 <div className="mt-3 text-[11px] text-muted-foreground">
                   Heartbeat automation controls are coming soon.
                 </div>
+              </section>
+            ) : null}
+            {isHermesRuntime ? (
+              <section className="sidebar-section" data-testid="agent-settings-heartbeats">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="sidebar-section-title">Heartbeats</h3>
+                  {heartbeats.length > 0 ? (
+                    <button
+                      className="sidebar-btn-ghost inline-flex items-center gap-1 px-2.5 py-1.5 font-mono text-[10px] font-semibold tracking-[0.06em] disabled:cursor-not-allowed disabled:opacity-60"
+                      type="button"
+                      aria-label="Run heartbeat now"
+                      onClick={() => {
+                        void onRunHeartbeat();
+                      }}
+                      disabled={heartbeatRunBusy}
+                    >
+                      <Play className="h-3 w-3" aria-hidden="true" />
+                      Run now
+                    </button>
+                  ) : null}
+                </div>
+                {heartbeatsLoading ? (
+                  <div className="mt-3 text-[11px] text-muted-foreground">Loading heartbeats...</div>
+                ) : null}
+                {!heartbeatsLoading && heartbeatsError ? (
+                  <div className="ui-alert-danger mt-3 rounded-md px-3 py-2 text-xs">
+                    {heartbeatsError}
+                  </div>
+                ) : null}
+                {!heartbeatsLoading && !heartbeatsError && heartbeats.length === 0 ? (
+                  <div className="mt-3 text-[11px] text-muted-foreground">
+                    No heartbeat configured for this agent.
+                  </div>
+                ) : null}
+                {!heartbeatsLoading && !heartbeatsError && heartbeats.length > 0 ? (
+                  <div className="mt-3 flex flex-col gap-3">
+                    {heartbeats.map((entry) => (
+                      <div key={entry.id} className="ui-card px-4 py-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-foreground">
+                              {entry.enabled ? `Every ${entry.heartbeat.every}` : "Disabled"}
+                            </div>
+                            <div className="mt-1 text-[11px] text-muted-foreground">
+                              {entry.source === "override" ? "Agent override" : "Default policy"}
+                            </div>
+                          </div>
+                          {heartbeatRunBusy ? (
+                            <div className="shrink-0 font-mono text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                              Running
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </section>
             ) : null}
           </section>

@@ -105,6 +105,8 @@ export type PackagedSkillInstallResult = {
   installedPath: string;
   source: RemovableSkillSource;
   skillKey: string;
+  workspaceDir?: string;
+  filesWritten?: number;
 };
 
 const resolveAgentId = (agentId: string): string => {

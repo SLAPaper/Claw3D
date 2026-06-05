@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import type { AgentState } from "@/features/agents/state/store";
 import { AgentSettingsPanel } from "@/features/agents/components/AgentInspectPanels";
 import type { CronJobSummary } from "@/lib/cron/types";
+import type { AgentHeartbeatSummary } from "@/lib/gateway/agentConfig";
 import type { SkillStatusReport } from "@/lib/skills/types";
 
 const createAgent = (): AgentState => ({
@@ -52,6 +53,20 @@ const createCronJob = (id: string): CronJobSummary => ({
   wakeMode: "next-heartbeat",
   payload: { kind: "agentTurn", message: "hi" },
   state: {},
+});
+
+const createHeartbeatSummary = (): AgentHeartbeatSummary => ({
+  id: "agent-1",
+  agentId: "agent-1",
+  source: "override",
+  enabled: true,
+  heartbeat: {
+    every: "5m",
+    target: "last",
+    includeReasoning: false,
+    ackMaxChars: 300,
+    activeHours: null,
+  },
 });
 
 const createSkillsReport = (): SkillStatusReport => ({
@@ -1169,7 +1184,8 @@ describe("AgentSettingsPanel", () => {
     expect(screen.getByText("Heartbeat automation controls are coming soon.")).toBeInTheDocument();
   });
 
-  it("hides_heartbeat_coming_soon_for_hermes", () => {
+  it("shows_hermes_heartbeat_controls_and_runs_now", () => {
+    const onRunHeartbeat = vi.fn();
     render(
       createElement(AgentSettingsPanel, {
         agent: createAgent(),
@@ -1186,10 +1202,19 @@ describe("AgentSettingsPanel", () => {
         onRunCronJob: vi.fn(),
         onDeleteCronJob: vi.fn(),
         adapterType: "hermes",
+        heartbeats: [createHeartbeatSummary()],
+        heartbeatsLoading: false,
+        heartbeatsError: null,
+        heartbeatRunBusy: false,
+        onRunHeartbeat,
       })
     );
 
     expect(screen.queryByTestId("agent-settings-heartbeat-coming-soon")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agent-settings-heartbeats")).toBeInTheDocument();
+    expect(screen.getByText("Every 5m")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Run heartbeat now" }));
+    expect(onRunHeartbeat).toHaveBeenCalledTimes(1);
   });
 
   it("shows_control_ui_section_in_advanced_mode", () => {

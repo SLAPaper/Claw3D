@@ -31,8 +31,11 @@ import type { GatewayClient, GatewayStatus } from "@/lib/gateway/GatewayClient";
 import { isGatewayDisconnectLikeError } from "@/lib/gateway/GatewayClient";
 import type { GatewayModelPolicySnapshot } from "@/lib/gateway/models";
 import {
+  listHeartbeatsForAgent,
   renameGatewayAgent,
+  triggerHeartbeatNow,
   updateGatewayAgentSkillsAllowlist,
+  type AgentHeartbeatSummary,
 } from "@/lib/gateway/agentConfig";
 import { canRemoveSkillSource } from "@/lib/skills/presentation";
 import { setAgentSkillEnabled } from "@/lib/skills/agentAccess";
@@ -93,6 +96,10 @@ export function useAgentSettingsMutationController(params: UseAgentSettingsMutat
   const [settingsCronJobs, setSettingsCronJobs] = useState<CronJobSummary[]>([]);
   const [settingsCronLoading, setSettingsCronLoading] = useState(false);
   const [settingsCronError, setSettingsCronError] = useState<string | null>(null);
+  const [settingsHeartbeats, setSettingsHeartbeats] = useState<AgentHeartbeatSummary[]>([]);
+  const [settingsHeartbeatsLoading, setSettingsHeartbeatsLoading] = useState(false);
+  const [settingsHeartbeatsError, setSettingsHeartbeatsError] = useState<string | null>(null);
+  const [heartbeatRunBusy, setHeartbeatRunBusy] = useState(false);
   const [cronCreateBusy, setCronCreateBusy] = useState(false);
   const [cronRunBusyJobId, setCronRunBusyJobId] = useState<string | null>(null);
   const [cronDeleteBusyJobId, setCronDeleteBusyJobId] = useState<string | null>(null);
@@ -252,6 +259,39 @@ export function useAgentSettingsMutationController(params: UseAgentSettingsMutat
     [params.client, params.runtimeSupportsCron]
   );
 
+  const loadHeartbeatsForSettingsAgent = useCallback(
+    async (agentId: string) => {
+      if (!params.runtimeSupportsCron) {
+        setSettingsHeartbeats([]);
+        setSettingsHeartbeatsLoading(false);
+        setSettingsHeartbeatsError(CRON_UNSUPPORTED_MESSAGE);
+        return;
+      }
+      const resolvedAgentId = agentId.trim();
+      if (!resolvedAgentId) {
+        setSettingsHeartbeats([]);
+        setSettingsHeartbeatsError("Failed to load heartbeats: missing agent id.");
+        return;
+      }
+      setSettingsHeartbeatsLoading(true);
+      setSettingsHeartbeatsError(null);
+      try {
+        const result = await listHeartbeatsForAgent(params.client, resolvedAgentId);
+        setSettingsHeartbeats(result.heartbeats);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Failed to load heartbeats.";
+        setSettingsHeartbeats([]);
+        setSettingsHeartbeatsError(message);
+        if (!isGatewayDisconnectLikeError(err)) {
+          console.error(message);
+        }
+      } finally {
+        setSettingsHeartbeatsLoading(false);
+      }
+    },
+    [params.client, params.runtimeSupportsCron]
+  );
+
   useEffect(() => {
     if (
       !params.settingsRouteActive ||
@@ -262,12 +302,18 @@ export function useAgentSettingsMutationController(params: UseAgentSettingsMutat
       setSettingsCronJobs([]);
       setSettingsCronLoading(false);
       setSettingsCronError(null);
+      setSettingsHeartbeats([]);
+      setSettingsHeartbeatsLoading(false);
+      setSettingsHeartbeatsError(null);
+      setHeartbeatRunBusy(false);
       setCronRunBusyJobId(null);
       setCronDeleteBusyJobId(null);
       return;
     }
     void loadCronJobsForSettingsAgent(params.inspectSidebarAgentId);
+    void loadHeartbeatsForSettingsAgent(params.inspectSidebarAgentId);
   }, [
+    loadHeartbeatsForSettingsAgent,
     loadCronJobsForSettingsAgent,
     params.inspectSidebarAgentId,
     params.inspectSidebarTab,
@@ -554,6 +600,44 @@ export function useAgentSettingsMutationController(params: UseAgentSettingsMutat
       }
     },
     [loadCronJobsForSettingsAgent, mutationContext, params.client, params.runtimeSupportsCron]
+  );
+
+  const handleRunHeartbeat = useCallback(
+    async (agentId: string) => {
+      if (!params.runtimeSupportsCron) {
+        setSettingsHeartbeatsError(CRON_UNSUPPORTED_MESSAGE);
+        return;
+      }
+      const resolvedAgentId = agentId.trim();
+      if (!resolvedAgentId) {
+        setSettingsHeartbeatsError("Failed to run heartbeat: missing agent id.");
+        return;
+      }
+      if (params.status !== "connected" || heartbeatRunBusy) {
+        return;
+      }
+      setHeartbeatRunBusy(true);
+      setSettingsHeartbeatsError(null);
+      try {
+        await triggerHeartbeatNow(params.client, resolvedAgentId);
+        await loadHeartbeatsForSettingsAgent(resolvedAgentId);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Failed to run heartbeat.";
+        setSettingsHeartbeatsError(message);
+        if (!isGatewayDisconnectLikeError(err)) {
+          console.error(message);
+        }
+      } finally {
+        setHeartbeatRunBusy(false);
+      }
+    },
+    [
+      heartbeatRunBusy,
+      loadHeartbeatsForSettingsAgent,
+      params.client,
+      params.runtimeSupportsCron,
+      params.status,
+    ]
   );
 
   const handleDeleteCronJob = useCallback(
@@ -1044,6 +1128,10 @@ export function useAgentSettingsMutationController(params: UseAgentSettingsMutat
     settingsCronJobs,
     settingsCronLoading,
     settingsCronError,
+    settingsHeartbeats,
+    settingsHeartbeatsLoading,
+    settingsHeartbeatsError,
+    heartbeatRunBusy,
     cronCreateBusy,
     cronRunBusyJobId,
     cronDeleteBusyJobId,
@@ -1054,6 +1142,7 @@ export function useAgentSettingsMutationController(params: UseAgentSettingsMutat
     handleDeleteAgent,
     handleCreateCronJob,
     handleRunCronJob,
+    handleRunHeartbeat,
     handleDeleteCronJob,
     handleRenameAgent,
     handleUpdateAgentPermissions,

@@ -29,13 +29,15 @@ export type AgentHeartbeatSummary = {
   source: "override" | "default";
   enabled: boolean;
   heartbeat: AgentHeartbeat;
+  everyMs?: number | null;
+  state?: Record<string, unknown>;
 };
 
 export type HeartbeatListResult = {
   heartbeats: AgentHeartbeatSummary[];
 };
 
-export type HeartbeatWakeResult = { ok: true } | { ok: false };
+export type HeartbeatWakeResult = { ok: true; runId?: string } | { ok: false };
 
 export type GatewayConfigSnapshot = {
   config?: Record<string, unknown>;
@@ -237,6 +239,7 @@ type GatewayStatusHeartbeatAgent = {
   enabled?: boolean;
   every?: string;
   everyMs?: number | null;
+  state?: Record<string, unknown>;
 };
 
 type GatewayStatusSnapshot = {
@@ -292,6 +295,12 @@ export const listHeartbeatsForAgent = async (
         source: resolved.hasOverride ? "override" : "default",
         enabled,
         heartbeat,
+        ...(statusHeartbeat && "everyMs" in statusHeartbeat
+          ? { everyMs: statusHeartbeat.everyMs ?? null }
+          : {}),
+        ...(statusHeartbeat && "state" in statusHeartbeat
+          ? { state: statusHeartbeat.state }
+          : {}),
       },
     ],
   };

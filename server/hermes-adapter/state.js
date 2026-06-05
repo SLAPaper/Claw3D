@@ -25,6 +25,8 @@ function createState(config, utils) {
   const cronJobs = new Map();
   /** @type {Map<string, object>} taskId -> GatewayTaskRecord */
   const tasksById = new Map();
+  /** @type {Map<string, object>} agentId -> heartbeat scheduler state */
+  const heartbeatStateByAgentId = new Map();
 
   let persistDebounceTimer = null;
 
@@ -272,6 +274,7 @@ function createState(config, utils) {
       skillEnabledByKey: mapToJsonObject(skillEnabledByKey),
       cronJobs: mapToJsonObject(cronJobs),
       tasks: mapToJsonObject(tasksById),
+      heartbeatStateByAgentId: mapToJsonObject(heartbeatStateByAgentId),
     };
   }
 
@@ -320,6 +323,9 @@ function createState(config, utils) {
       if (!isPlainObject(value)) return undefined;
       return { ...cloneJson(value), id: typeof value.id === "string" ? value.id : key };
     });
+    hydratePlainObjectMap(heartbeatStateByAgentId, state.heartbeatStateByAgentId, (value) =>
+      isPlainObject(value) ? cloneJson(value) : undefined
+    );
   }
 
   function loadHistoryFromDisk() {
@@ -394,6 +400,7 @@ function createState(config, utils) {
     activeRuns,
     cronJobs,
     tasksById,
+    heartbeatStateByAgentId,
     agentRegistry,
     createDefaultAgent,
     normalizeAgentRecord,

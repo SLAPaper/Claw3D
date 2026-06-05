@@ -94,6 +94,14 @@ const resolveMainKey = async (client: GatewayClient): Promise<string> => {
   return typeof result?.mainKey === "string" && result.mainKey.trim() ? result.mainKey.trim() : "main";
 };
 
+const supportsDirectHermesSkillInstall = (client: GatewayClient): boolean => {
+  const hello =
+    typeof client.getLastHello === "function" ? client.getLastHello() : null;
+  if (hello?.adapterType !== "hermes") return false;
+  const methods = Array.isArray(hello.features?.methods) ? hello.features.methods : [];
+  return methods.includes("skills.install");
+};
+
 export const installPackagedSkillViaGatewayAgent = async (params: {
   client: GatewayClient;
   request: PackagedSkillInstallRequest;
@@ -122,6 +130,18 @@ export const installPackagedSkillViaGatewayAgent = async (params: {
     agentId: params.request.agentId,
     agentName: params.request.agentName,
   });
+
+  if (supportsDirectHermesSkillInstall(params.client)) {
+    return params.client.call<PackagedSkillInstallResult>("skills.install", {
+      packageId: packagedSkill.packageId,
+      source: params.request.source,
+      workspaceDir,
+      managedSkillsDir: params.request.managedSkillsDir,
+      ...(params.request.agentId ? { agentId: params.request.agentId } : {}),
+      ...(params.request.agentName ? { agentName: params.request.agentName } : {}),
+    });
+  }
+
   const files = readPackagedSkillFiles(packagedSkill.packageId);
   const installerName = `Skill Installer ${Date.now()}`;
 

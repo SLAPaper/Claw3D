@@ -15,7 +15,9 @@ import { runAgentConfigMutationLifecycle } from "@/features/agents/operations/mu
 import { runCronJobNow, removeCronJob } from "@/lib/cron/types";
 import { shouldAwaitDisconnectRestartForRemoteMutation } from "@/lib/gateway/gatewayReloadMode";
 import {
+  listHeartbeatsForAgent,
   readGatewayAgentSkillsAllowlist,
+  triggerHeartbeatNow,
   updateGatewayAgentSkillsAllowlist,
 } from "@/lib/gateway/agentConfig";
 import { removeSkillFromGateway } from "@/lib/skills/remove";
@@ -97,7 +99,9 @@ vi.mock("@/lib/gateway/agentConfig", async () => {
   );
   return {
     ...actual,
+    listHeartbeatsForAgent: vi.fn(async () => ({ heartbeats: [] })),
     readGatewayAgentSkillsAllowlist: vi.fn(async () => undefined),
+    triggerHeartbeatNow: vi.fn(async () => ({ ok: true })),
     updateGatewayAgentSkillsAllowlist: vi.fn(async () => undefined),
   };
 });
@@ -227,7 +231,9 @@ describe("useAgentSettingsMutationController", () => {
   const mockedRunLifecycle = vi.mocked(runAgentConfigMutationLifecycle);
   const mockedUpdateAgentPermissions = vi.mocked(updateAgentPermissionsViaStudio);
   const mockedShouldAwaitRemoteRestart = vi.mocked(shouldAwaitDisconnectRestartForRemoteMutation);
+  const mockedListHeartbeatsForAgent = vi.mocked(listHeartbeatsForAgent);
   const mockedReadGatewayAgentSkillsAllowlist = vi.mocked(readGatewayAgentSkillsAllowlist);
+  const mockedTriggerHeartbeatNow = vi.mocked(triggerHeartbeatNow);
   const mockedUpdateGatewayAgentSkillsAllowlist = vi.mocked(updateGatewayAgentSkillsAllowlist);
   const mockedLoadAgentSkillStatus = vi.mocked(loadAgentSkillStatus);
   const mockedInstallSkill = vi.mocked(installSkill);
@@ -243,14 +249,18 @@ describe("useAgentSettingsMutationController", () => {
     mockedRunLifecycle.mockReset();
     mockedUpdateAgentPermissions.mockReset();
     mockedShouldAwaitRemoteRestart.mockReset();
+    mockedListHeartbeatsForAgent.mockReset();
     mockedReadGatewayAgentSkillsAllowlist.mockReset();
+    mockedTriggerHeartbeatNow.mockReset();
     mockedUpdateGatewayAgentSkillsAllowlist.mockReset();
     mockedLoadAgentSkillStatus.mockReset();
     mockedInstallSkill.mockReset();
     mockedRemoveSkillFromGateway.mockReset();
     mockedUpdateSkill.mockReset();
     mockedShouldAwaitRemoteRestart.mockResolvedValue(false);
+    mockedListHeartbeatsForAgent.mockResolvedValue({ heartbeats: [] });
     mockedReadGatewayAgentSkillsAllowlist.mockResolvedValue(undefined);
+    mockedTriggerHeartbeatNow.mockResolvedValue({ ok: true });
     mockedUpdateGatewayAgentSkillsAllowlist.mockResolvedValue(undefined);
     mockedLoadAgentSkillStatus.mockResolvedValue({
       workspaceDir: "/tmp/workspace",
@@ -459,6 +469,43 @@ describe("useAgentSettingsMutationController", () => {
     });
 
     expect(mockedPerformCronCreateFlow).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads_and_runs_hermes_heartbeat_controls_when_automations_tab_is_active", async () => {
+    mockedListHeartbeatsForAgent.mockResolvedValue({
+      heartbeats: [
+        {
+          id: "agent-1",
+          agentId: "agent-1",
+          source: "override",
+          enabled: true,
+          heartbeat: {
+            every: "5m",
+            target: "last",
+            includeReasoning: false,
+            ackMaxChars: 300,
+            activeHours: null,
+          },
+        },
+      ],
+    });
+    const ctx = renderController({
+      settingsRouteActive: true,
+      inspectSidebarAgentId: "agent-1",
+      inspectSidebarTab: "automations",
+    });
+
+    await waitFor(() => {
+      expect(mockedListHeartbeatsForAgent).toHaveBeenCalledWith(expect.anything(), "agent-1");
+      expect(ctx.getValue().settingsHeartbeats).toHaveLength(1);
+    });
+
+    await act(async () => {
+      await ctx.getValue().handleRunHeartbeat("agent-1");
+    });
+
+    expect(mockedTriggerHeartbeatNow).toHaveBeenCalledWith(expect.anything(), "agent-1");
+    expect(ctx.getValue().heartbeatRunBusy).toBe(false);
   });
 
   it("cron_mutations_fail_fast_when_runtime_lacks_cron_capability", async () => {
