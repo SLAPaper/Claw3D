@@ -35,6 +35,7 @@ export function useOfficeFloorRuntimePersistence({
   // transitions that arrive after the user has navigated to a different floor
   // still target the floor that owns the connection.
   const gatewayOwnerFloorIdRef = useRef<FloorId>(activeFloorId);
+  const lastPatchSignatureRef = useRef<string | null>(null);
   useEffect(() => {
     gatewayOwnerFloorIdRef.current = activeFloorId;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -42,7 +43,10 @@ export function useOfficeFloorRuntimePersistence({
 
   useEffect(() => {
     const key = gatewayUrl.trim();
-    if (!key) return;
+    if (!key) {
+      lastPatchSignatureRef.current = null;
+      return;
+    }
 
     const patch =
       status === "connected"
@@ -63,8 +67,18 @@ export function useOfficeFloorRuntimePersistence({
               }
             : { status: "disconnected" as const };
 
+    const ownerFloorId = gatewayOwnerFloorIdRef.current;
+    const patchSignature = JSON.stringify({
+      gatewayError: gatewayError ?? "",
+      gatewayUrl: key,
+      ownerFloorId,
+      status,
+    });
+    if (lastPatchSignatureRef.current === patchSignature) return;
+    lastPatchSignatureRef.current = patchSignature;
+
     settingsCoordinator.schedulePatch(
-      { officeFloors: { [gatewayOwnerFloorIdRef.current]: patch } },
+      { officeFloors: { [ownerFloorId]: patch } },
       0,
     );
   }, [gatewayError, gatewayUrl, settingsCoordinator, status]);

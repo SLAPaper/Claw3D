@@ -23,6 +23,25 @@ function createStartAdapter(ctx, handleMethod) {
   const { config, events, utils, state, scheduler } = ctx;
   const { randomId, sanitizeErrorMessage, resErr } = utils;
 
+  const summarizeClient = (params) => {
+    const client =
+      params && typeof params === "object" && params.client && typeof params.client === "object"
+        ? params.client
+        : {};
+    const clientId =
+      typeof client.id === "string" && client.id.trim() ? client.id.trim() : "unknown";
+    const clientMode =
+      typeof client.mode === "string" && client.mode.trim() ? client.mode.trim() : "unknown";
+    return { clientId, clientMode };
+  };
+
+  const formatCloseReason = (reasonBuffer) => {
+    const reason = Buffer.isBuffer(reasonBuffer)
+      ? reasonBuffer.toString("utf8")
+      : String(reasonBuffer || "");
+    return reason.trim() || "(none)";
+  };
+
   return function startAdapter() {
     let schedulerHandle = null;
     const httpServer = http.createServer((req, res) => {
@@ -54,6 +73,9 @@ function createStartAdapter(ctx, handleMethod) {
         send(frame);
       };
       events.activeSendEventFns.add(sendEventFn);
+      console.log(
+        `[hermes-adapter] WebSocket client connected active=${events.activeSendEventFns.size}`
+      );
 
       send({ type: "event", event: "connect.challenge", payload: { nonce: randomId() } });
 
@@ -70,6 +92,7 @@ function createStartAdapter(ctx, handleMethod) {
 
         if (method === "connect") {
           connected = true;
+          const { clientId, clientMode } = summarizeClient(params);
           const allAgents = [...state.agentRegistry.values()].map((agent) => ({
             agentId: agent.id,
             name: agent.name,
@@ -105,6 +128,9 @@ function createStartAdapter(ctx, handleMethod) {
               policy: { tickIntervalMs: 30000 },
             },
           });
+          console.log(
+            `[hermes-adapter] Gateway connect ok client.id=${clientId} mode=${clientMode} protocol=3 agents=${allAgents.length}`
+          );
           return;
         }
 
@@ -113,17 +139,37 @@ function createStartAdapter(ctx, handleMethod) {
           return;
         }
 
+        const startedAt = Date.now();
         try {
           const response = await handleMethod(method, params, id, sendEventFn);
+          const durationMs = Date.now() - startedAt;
+          const status = response && response.ok === false ? "error" : "ok";
+          const code =
+            response && response.ok === false && response.error?.code
+              ? ` code=${response.error.code}`
+              : "";
+          console.log(`[hermes-adapter] Method ${method} ${status}${code} durationMs=${durationMs}`);
           send(response);
         } catch (err) {
           const message = sanitizeErrorMessage(err);
+          console.log(
+            `[hermes-adapter] Method ${method} error code=internal_error durationMs=${
+              Date.now() - startedAt
+            }`
+          );
           console.error(`[hermes-adapter] Error handling ${method}:`, message);
           send(resErr(id, "internal_error", message || "Internal error"));
         }
       });
 
-      ws.on("close", () => events.activeSendEventFns.delete(sendEventFn));
+      ws.on("close", (code, reasonBuffer) => {
+        events.activeSendEventFns.delete(sendEventFn);
+        console.log(
+          `[hermes-adapter] WebSocket client disconnected code=${code} reason=${formatCloseReason(
+            reasonBuffer
+          )} active=${events.activeSendEventFns.size}`
+        );
+      });
       ws.on("error", (err) => {
         console.error("[hermes-adapter] WebSocket error:", sanitizeErrorMessage(err));
         events.activeSendEventFns.delete(sendEventFn);

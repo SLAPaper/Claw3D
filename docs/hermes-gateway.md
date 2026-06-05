@@ -64,6 +64,11 @@ In the connect screen, select `Hermes backend`. Claw3D will persist that
 selection in Studio settings and show `Hermes` as the active backend once
 the adapter hello response is received.
 
+`npm run build` only compiles the production Next.js app. It does not start
+Studio, open `/api/gateway/ws`, or connect to Hermes. The Hermes adapter logs
+runtime connection activity only when `npm run dev` or `npm run start` is
+running and a Studio browser session connects through the gateway proxy.
+
 ### 4. Optional all-in-one local startup
 
 The repo also includes:

@@ -96,6 +96,39 @@ describe("useOfficeFloorRuntimePersistence", () => {
     expect(updateSettings).not.toHaveBeenCalled();
   });
 
+  it("does not reschedule identical runtime state when the settings coordinator instance changes", async () => {
+    const first = makeCoordinator();
+
+    const { rerender } = renderHook<void, HookParams>(
+      (props) => useOfficeFloorRuntimePersistence(props),
+      {
+        initialProps: {
+          activeFloorId: "hermes-first" as FloorId,
+          gatewayUrl: "ws://localhost:18789",
+          status: "connecting" as GatewayStatus,
+          gatewayError: null,
+          settingsCoordinator: first.coordinator,
+        },
+      },
+    );
+
+    await act(() => vi.runAllTimersAsync());
+    expect(first.updateSettings).toHaveBeenCalledTimes(1);
+
+    const second = makeCoordinator();
+    rerender({
+      activeFloorId: "hermes-first" as const,
+      gatewayUrl: "ws://localhost:18789",
+      status: "connecting" as const,
+      gatewayError: null,
+      settingsCoordinator: second.coordinator,
+    });
+
+    await act(() => vi.runAllTimersAsync());
+
+    expect(second.updateSettings).not.toHaveBeenCalled();
+  });
+
   it("updates the new floor only when the gateway URL itself changes after a floor switch", async () => {
     const { coordinator, updateSettings } = makeCoordinator();
 

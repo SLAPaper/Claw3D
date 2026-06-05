@@ -76,6 +76,7 @@ test-results
 /agent-canvas
 /worktrees
 /.claude
+/.playwright-mcp
 
 # local issue tracker
 /.beads
