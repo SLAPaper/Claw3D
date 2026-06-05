@@ -23,6 +23,8 @@ function createState(config, utils) {
   const activeRuns = new Map();
   /** @type {Map<string, object>} jobId -> CronJobSummary */
   const cronJobs = new Map();
+  /** @type {Map<string, object>} taskId -> GatewayTaskRecord */
+  const tasksById = new Map();
 
   let persistDebounceTimer = null;
 
@@ -269,6 +271,7 @@ function createState(config, utils) {
       execApprovalsFile: cloneJson(execApprovalsFile),
       skillEnabledByKey: mapToJsonObject(skillEnabledByKey),
       cronJobs: mapToJsonObject(cronJobs),
+      tasks: mapToJsonObject(tasksById),
     };
   }
 
@@ -310,6 +313,10 @@ function createState(config, utils) {
       typeof value === "boolean" ? value : undefined
     );
     hydratePlainObjectMap(cronJobs, state.cronJobs, (value, key) => {
+      if (!isPlainObject(value)) return undefined;
+      return { ...cloneJson(value), id: typeof value.id === "string" ? value.id : key };
+    });
+    hydratePlainObjectMap(tasksById, state.tasks, (value, key) => {
       if (!isPlainObject(value)) return undefined;
       return { ...cloneJson(value), id: typeof value.id === "string" ? value.id : key };
     });
@@ -386,6 +393,7 @@ function createState(config, utils) {
     skillEnabledByKey,
     activeRuns,
     cronJobs,
+    tasksById,
     agentRegistry,
     createDefaultAgent,
     normalizeAgentRecord,

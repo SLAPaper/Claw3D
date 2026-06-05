@@ -7,6 +7,11 @@ function createSkills(config, state, utils, workspaceFiles) {
   const {
     sanitizeErrorMessage,
   } = utils;
+  const PACKAGED_SKILL_KEYS = {
+    "todo-board": "todo-board",
+    "task-manager": "task-manager",
+    soundclaw: "soundclaw",
+  };
 
   function parseJsonStringLiteral(value, label) {
     try {
@@ -74,6 +79,76 @@ function createSkills(config, state, utils, workspaceFiles) {
       });
     }
     return { workspaceDir, filesWritten: files.length };
+  }
+
+  function getPackagedSkillKey(packageId) {
+    const normalized = typeof packageId === "string" ? packageId.trim() : "";
+    return PACKAGED_SKILL_KEYS[normalized] || "";
+  }
+
+  function listAssetFiles(dir, prefix = "") {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    const files = [];
+    for (const entry of entries) {
+      const relativeName = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        files.push(...listAssetFiles(fullPath, relativeName));
+      } else if (entry.isFile()) {
+        files.push({
+          relativePath: relativeName.replace(/\\/g, "/"),
+          content: fs.readFileSync(fullPath, "utf8"),
+        });
+      }
+    }
+    return files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  }
+
+  function readPackagedSkillFiles(packageId) {
+    const skillKey = getPackagedSkillKey(packageId);
+    if (!skillKey) {
+      throw new Error(`Unknown packaged skill: ${packageId}`);
+    }
+    const assetsRoot = path.join(process.cwd(), "assets", "skills");
+    const assetDir = path.join(assetsRoot, skillKey);
+    if (!fs.existsSync(assetDir) || !fs.statSync(assetDir).isDirectory()) {
+      throw new Error(`Packaged skill assets are missing: ${packageId}`);
+    }
+    const files = listAssetFiles(assetDir);
+    if (!files.some((file) => file.relativePath === "SKILL.md")) {
+      throw new Error(`Packaged skill is missing SKILL.md: ${packageId}`);
+    }
+    return files;
+  }
+
+  function installPackagedSkill(agent, request) {
+    const workspaceDir = typeof agent?.workspace === "string" ? agent.workspace.trim() : "";
+    if (!workspaceDir) {
+      throw new Error("Cannot install skill files because the Hermes agent has no workspace.");
+    }
+
+    const packageId = typeof request?.packageId === "string" ? request.packageId.trim() : "";
+    const skillKey = getPackagedSkillKey(packageId);
+    if (!skillKey) {
+      throw new Error(`Unknown packaged skill: ${packageId}`);
+    }
+
+    const files = readPackagedSkillFiles(packageId);
+    for (const file of files) {
+      workspaceFiles.writeAgentFile(agent, `skills/${skillKey}/${file.relativePath}`, file.content, {
+        bootstrap: false,
+        label: "packaged skill file path",
+        requiredPrefix: "skills/",
+      });
+    }
+    return {
+      installed: true,
+      installedPath: path.join(workspaceDir, "skills", skillKey),
+      source: "openclaw-workspace",
+      skillKey,
+      workspaceDir,
+      filesWritten: files.length,
+    };
   }
 
   function parseSkillFrontmatter(content) {
@@ -173,6 +248,8 @@ function createSkills(config, state, utils, workspaceFiles) {
 
   return {
     writeSkillInstallerFiles,
+    getPackagedSkillKey,
+    installPackagedSkill,
     buildSkillStatusReport,
   };
 }

@@ -1,7 +1,7 @@
 "use strict";
 
 function createHandleMethod(ctx) {
-  const { config, state, workspaceFiles, hermes, skills, orchestration, events, utils } = ctx;
+  const { config, state, workspaceFiles, hermes, skills, orchestration, utils } = ctx;
   const {
     cloneJson,
     randomId,
@@ -15,6 +15,242 @@ function createHandleMethod(ctx) {
     enforced: false,
     runtime: "hermes",
   };
+  const TASK_STATUSES = new Set(["todo", "in_progress", "blocked", "review", "done"]);
+  const TASK_SOURCES = new Set(["openclaw_event", "claw3d_manual", "playbook", "fallback_inferred"]);
+
+  function trimString(value) {
+    return typeof value === "string" ? value.trim() : "";
+  }
+
+  function normalizeNullableString(value) {
+    if (value === null) return null;
+    const trimmed = trimString(value);
+    return trimmed || null;
+  }
+
+  function normalizeStringArray(value) {
+    return Array.isArray(value)
+      ? value.filter((entry) => typeof entry === "string").map((entry) => entry.trim()).filter(Boolean)
+      : [];
+  }
+
+  function normalizePathString(value) {
+    return trimString(value).replace(/[\\/]+$/, "");
+  }
+
+  function normalizeTaskSource(value) {
+    const source = trimString(value);
+    return TASK_SOURCES.has(source) ? source : "claw3d_manual";
+  }
+
+  function normalizeTaskStatus(value, fallback = "todo") {
+    const status = trimString(value);
+    return TASK_STATUSES.has(status) ? status : fallback;
+  }
+
+  function validateTaskStatus(value) {
+    if (value === undefined) return null;
+    const status = trimString(value);
+    return TASK_STATUSES.has(status) ? status : null;
+  }
+
+  function sortTasks(tasks) {
+    return [...tasks].sort((left, right) => {
+      const rightTime = Date.parse(right.updatedAt || "");
+      const leftTime = Date.parse(left.updatedAt || "");
+      const timeDiff = (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
+      if (timeDiff !== 0) return timeDiff;
+      return String(left.id || "").localeCompare(String(right.id || ""));
+    });
+  }
+
+  function createTaskRecord(input) {
+    const title = trimString(input.title);
+    if (!title) throw new Error("Task title is required.");
+    const now = new Date().toISOString();
+    const status = normalizeTaskStatus(input.status);
+    return {
+      id: `task-${randomId().slice(0, 10)}`,
+      title,
+      description: trimString(input.description),
+      status,
+      source: normalizeTaskSource(input.source),
+      sourceEventId: normalizeNullableString(input.sourceEventId),
+      assignedAgentId: normalizeNullableString(input.assignedAgentId),
+      createdAt: now,
+      updatedAt: now,
+      playbookJobId: normalizeNullableString(input.playbookJobId),
+      runId: normalizeNullableString(input.runId),
+      channel: normalizeNullableString(input.channel),
+      externalThreadId: normalizeNullableString(input.externalThreadId),
+      lastActivityAt: normalizeNullableString(input.lastActivityAt),
+      notes: normalizeStringArray(input.notes),
+      archived: Boolean(input.archived),
+    };
+  }
+
+  function applyTaskPatch(task, patch) {
+    const next = { ...task };
+    if (patch.title !== undefined) {
+      const title = trimString(patch.title);
+      if (!title) throw new Error("Task title is required.");
+      next.title = title;
+    }
+    if (patch.description !== undefined) next.description = trimString(patch.description);
+    if (patch.status !== undefined) {
+      const status = validateTaskStatus(patch.status);
+      if (!status) throw new Error("Invalid task status.");
+      next.status = status;
+    }
+    if (patch.assignedAgentId !== undefined) next.assignedAgentId = normalizeNullableString(patch.assignedAgentId);
+    if (patch.playbookJobId !== undefined) next.playbookJobId = normalizeNullableString(patch.playbookJobId);
+    if (patch.runId !== undefined) next.runId = normalizeNullableString(patch.runId);
+    if (patch.channel !== undefined) next.channel = normalizeNullableString(patch.channel);
+    if (patch.externalThreadId !== undefined) next.externalThreadId = normalizeNullableString(patch.externalThreadId);
+    if (patch.sourceEventId !== undefined) next.sourceEventId = normalizeNullableString(patch.sourceEventId);
+    if (patch.notes !== undefined) next.notes = normalizeStringArray(patch.notes);
+    if (patch.archived !== undefined) next.archived = Boolean(patch.archived);
+    next.updatedAt = new Date().toISOString();
+    return next;
+  }
+
+  function resolveHeartbeatBlock(agentId) {
+    const adapterConfig = state.getAdapterConfig();
+    const agents = utils.isPlainObject(adapterConfig.agents) ? adapterConfig.agents : {};
+    const defaults = utils.isPlainObject(agents.defaults) && utils.isPlainObject(agents.defaults.heartbeat)
+      ? agents.defaults.heartbeat
+      : {};
+    const agentEntry = state.getConfigAgentList(adapterConfig).find((entry) => entry.id === agentId) || {};
+    const override = utils.isPlainObject(agentEntry.heartbeat) ? agentEntry.heartbeat : {};
+    const merged = { ...defaults, ...override };
+    const every = trimString(merged.every);
+    const loweredEvery = every.toLowerCase();
+    const enabled = Boolean(every && loweredEvery !== "disabled" && loweredEvery !== "off" && loweredEvery !== "none");
+    return {
+      agentId,
+      enabled,
+      ...(every ? { every } : {}),
+    };
+  }
+
+  function buildHeartbeatStatusAgents() {
+    return [...state.agentRegistry.keys()].map((agentId) => resolveHeartbeatBlock(agentId));
+  }
+
+  function buildSessionEntry(sessionKey, agent) {
+    const parts = sessionKey.split(":");
+    const sessionName = parts.length >= 3 ? parts.slice(2).join(":") : config.MAIN_KEY;
+    const history = state.getHistory(sessionKey);
+    const settings = state.sessionSettings.get(sessionKey) || {};
+    const isActive = [...state.activeRuns.values()].some((run) => run.sessionKey === sessionKey);
+    const isHeartbeat = sessionName === "heartbeat";
+    return {
+      key: sessionKey,
+      agentId: agent?.id || resolveAgentIdFromSessionKey(sessionKey),
+      updatedAt: history.length > 0 || isActive ? Date.now() : null,
+      displayName: isHeartbeat ? "Heartbeat" : (sessionName === config.MAIN_KEY ? "Main" : sessionName),
+      origin: { label: isHeartbeat ? "heartbeat" : (agent?.name || sessionName), provider: "hermes" },
+      model: settings.model || agent?.settings?.model || config.HERMES_MODEL,
+      modelProvider: "hermes",
+    };
+  }
+
+  function startChatRun({ sessionKey, userMessage, runId, sendEvent, onDone }) {
+    const trimmedMessage = trimString(userMessage);
+    if (!trimmedMessage) return { status: "no-op", runId };
+
+    const sessionAgentId = resolveAgentIdFromSessionKey(sessionKey);
+    const agent = state.agentRegistry.get(sessionAgentId);
+    const isOrchestrator = sessionAgentId === config.AGENT_ID;
+    let aborted = false;
+
+    state.activeRuns.set(runId, {
+      runId,
+      sessionKey,
+      agentId: sessionAgentId,
+      abort() { aborted = true; },
+    });
+
+    setImmediate(async () => {
+      const startedAtMs = Date.now();
+      const model = (state.sessionSettings.get(sessionKey) || {}).model
+        || agent?.settings?.model || config.HERMES_MODEL;
+      let seqCounter = 0;
+
+      const emitChat = (stateName, extra) => {
+        sendEvent({
+          type: "event",
+          event: "chat",
+          seq: seqCounter++,
+          payload: { runId, sessionKey, state: stateName, ...extra },
+        });
+      };
+
+      const onTextDelta = (partial) => {
+        if (!aborted) emitChat("delta", { message: { role: "assistant", content: partial } });
+      };
+
+      try {
+        const tools = isOrchestrator ? orchestration.TEAM_TOOLS : [];
+        const finalText = await orchestration.runAgenticLoop({
+          sessionKey,
+          agentId: sessionAgentId,
+          userMessage: trimmedMessage,
+          model,
+          tools,
+          emitDelta: onTextDelta,
+          abortCheck: () => aborted,
+          sendEvent,
+        });
+
+        if (aborted) {
+          emitChat("aborted", {});
+          if (onDone) onDone({ status: "aborted", durationMs: Date.now() - startedAtMs });
+        } else {
+          emitChat("final", {
+            stopReason: "end_turn",
+            message: { role: "assistant", content: finalText },
+          });
+          sendEvent({
+            type: "event",
+            event: "presence",
+            seq: seqCounter++,
+            payload: {
+              sessions: {
+                recent: [{ key: sessionKey, updatedAt: Date.now() }],
+                byAgent: [{ agentId: sessionAgentId, recent: [{ key: sessionKey, updatedAt: Date.now() }] }],
+              },
+            },
+          });
+          if (onDone) onDone({ status: "ok", finalText, durationMs: Date.now() - startedAtMs });
+        }
+      } catch (err) {
+        const errorMessage = sanitizeErrorMessage(err) || "Hermes API error";
+        if (!aborted) emitChat("error", { errorMessage });
+        else emitChat("aborted", {});
+        if (onDone) onDone({ status: aborted ? "aborted" : "error", errorMessage, durationMs: Date.now() - startedAtMs });
+      } finally {
+        state.activeRuns.delete(runId);
+      }
+    });
+
+    return { status: "started", runId };
+  }
+
+  function resolveCronPrompt(job) {
+    const payload = utils.isPlainObject(job.payload) ? job.payload : {};
+    if (payload.kind === "agentTurn" && trimString(payload.message)) return trimString(payload.message);
+    if (payload.kind === "systemEvent" && trimString(payload.text)) return trimString(payload.text);
+    return `Run scheduled task: ${job.name || job.id}`;
+  }
+
+  function resolveWakeAgentId(input) {
+    const directAgentId = trimString(input.agentId);
+    if (directAgentId) return directAgentId;
+    const text = trimString(input.text);
+    const match = text.match(/\(([^)]+)\)/);
+    return match?.[1]?.trim() || config.AGENT_ID;
+  }
 
   return async function handleMethod(method, params, id, sendEvent) {
     const p = params || {};
@@ -169,19 +405,19 @@ function createHandleMethod(ctx) {
       }
 
       case "sessions.list": {
-        const sessions = [...state.agentRegistry.values()].map((agent) => {
-          const sessionKey = `agent:${agent.id}:${config.MAIN_KEY}`;
-          const history = state.getHistory(sessionKey);
-          const settings = state.sessionSettings.get(sessionKey) || {};
-          return {
-            key: sessionKey,
-            agentId: agent.id,
-            updatedAt: history.length > 0 ? Date.now() : null,
-            displayName: "Main",
-            origin: { label: agent.name, provider: "hermes" },
-            model: settings.model || agent.settings?.model || config.HERMES_MODEL,
-            modelProvider: "hermes",
-          };
+        const sessionKeys = new Set();
+        for (const agent of state.agentRegistry.values()) {
+          sessionKeys.add(`agent:${agent.id}:${config.MAIN_KEY}`);
+        }
+        for (const [key, messages] of state.conversationHistory.entries()) {
+          if (Array.isArray(messages) && messages.length > 0) sessionKeys.add(key);
+        }
+        for (const run of state.activeRuns.values()) {
+          sessionKeys.add(run.sessionKey);
+        }
+        const sessions = [...sessionKeys].map((sessionKey) => {
+          const agentId = resolveAgentIdFromSessionKey(sessionKey);
+          return buildSessionEntry(sessionKey, state.agentRegistry.get(agentId));
         });
         return resOk(id, { sessions });
       }
@@ -238,7 +474,6 @@ function createHandleMethod(ctx) {
 
         const sessionAgentId = resolveAgentIdFromSessionKey(sessionKey);
         const agent = state.agentRegistry.get(sessionAgentId);
-        const isOrchestrator = sessionAgentId === config.AGENT_ID;
 
         if (
           typeof p.idempotencyKey === "string" &&
@@ -269,73 +504,7 @@ function createHandleMethod(ctx) {
           });
         }
 
-        let aborted = false;
-        state.activeRuns.set(runId, {
-          runId,
-          sessionKey,
-          agentId: sessionAgentId,
-          abort() { aborted = true; },
-        });
-
-        setImmediate(async () => {
-          const model = (state.sessionSettings.get(sessionKey) || {}).model
-            || agent?.settings?.model || config.HERMES_MODEL;
-          let seqCounter = 0;
-
-          const emitChat = (stateName, extra) => {
-            sendEvent({
-              type: "event",
-              event: "chat",
-              seq: seqCounter++,
-              payload: { runId, sessionKey, state: stateName, ...extra },
-            });
-          };
-
-          const onTextDelta = (partial) => {
-            if (!aborted) emitChat("delta", { message: { role: "assistant", content: partial } });
-          };
-
-          try {
-            const tools = isOrchestrator ? orchestration.TEAM_TOOLS : [];
-            const finalText = await orchestration.runAgenticLoop({
-              sessionKey,
-              agentId: sessionAgentId,
-              userMessage,
-              model,
-              tools,
-              emitDelta: onTextDelta,
-              abortCheck: () => aborted,
-              sendEvent,
-            });
-
-            if (aborted) {
-              emitChat("aborted", {});
-            } else {
-              emitChat("final", {
-                stopReason: "end_turn",
-                message: { role: "assistant", content: finalText },
-              });
-              sendEvent({
-                type: "event",
-                event: "presence",
-                seq: seqCounter++,
-                payload: {
-                  sessions: {
-                    recent: [{ key: sessionKey, updatedAt: Date.now() }],
-                    byAgent: [{ agentId: sessionAgentId, recent: [{ key: sessionKey, updatedAt: Date.now() }] }],
-                  },
-                },
-              });
-            }
-          } catch (err) {
-            if (!aborted) emitChat("error", { errorMessage: sanitizeErrorMessage(err) || "Hermes API error" });
-            else emitChat("aborted", {});
-          } finally {
-            state.activeRuns.delete(runId);
-          }
-        });
-
-        return resOk(id, { status: "started", runId });
+        return resOk(id, startChatRun({ sessionKey, userMessage, runId, sendEvent }));
       }
 
       case "chat.abort": {
@@ -404,7 +573,8 @@ function createHandleMethod(ctx) {
 
       case "status": {
         const recent = [...state.agentRegistry.keys()].flatMap((agentId) => {
-          const history = state.getHistory(`agent:${agentId}:${config.MAIN_KEY}`);
+          const sessionKey = `agent:${agentId}:${config.MAIN_KEY}`;
+          const history = state.getHistory(sessionKey);
           return history.length > 0 ? [{ key: `agent:${agentId}:${config.MAIN_KEY}`, updatedAt: Date.now() }] : [];
         });
         return resOk(id, {
@@ -415,11 +585,26 @@ function createHandleMethod(ctx) {
               recent: recent.filter((entry) => entry.key.includes(`:${agentId}:`)),
             })),
           },
+          heartbeat: { agents: buildHeartbeatStatusAgents() },
         });
       }
 
-      case "wake":
-        return resOk(id, { ok: true });
+      case "wake": {
+        const agentId = resolveWakeAgentId(p);
+        if (!state.agentRegistry.has(agentId)) {
+          return resErr(id, "not_found", `Agent not found: ${agentId}`);
+        }
+        const sessionKey = `agent:${agentId}:heartbeat`;
+        const runId = `heartbeat:${agentId}:${randomId()}`;
+        const text = trimString(p.text) || `Claw3D heartbeat trigger (${agentId}).`;
+        sendEvent({
+          type: "event",
+          event: "heartbeat",
+          payload: { action: "started", agentId, sessionKey, runId, text, timestamp: Date.now() },
+        });
+        const result = startChatRun({ sessionKey, userMessage: text, runId, sendEvent });
+        return resOk(id, { ok: result.status !== "no-op", runId });
+      }
 
       case "skills.status": {
         const targetAgentId = typeof p.agentId === "string" && p.agentId.trim()
@@ -430,6 +615,37 @@ function createHandleMethod(ctx) {
           return resErr(id, "not_found", `Agent not found: ${targetAgentId}`);
         }
         return resOk(id, skills.buildSkillStatusReport(agent));
+      }
+
+      case "skills.install": {
+        if (trimString(p.name) && trimString(p.installId)) {
+          return resErr(id, "not_supported", "Hermes adapter cannot install external skill dependencies; packaged workspace skills are supported.");
+        }
+        const packageId = trimString(p.packageId);
+        if (!packageId) {
+          return resErr(id, "invalid_request", "packageId is required for Hermes packaged skill installs.");
+        }
+        const source = trimString(p.source) || "openclaw-workspace";
+        if (source !== "openclaw-workspace") {
+          return resErr(id, "not_supported", "Hermes adapter supports workspace packaged skill installs only.");
+        }
+        if (!skills.getPackagedSkillKey(packageId)) {
+          return resErr(id, "not_found", `Unknown packaged skill: ${packageId}`);
+        }
+        const targetAgentId = trimString(p.agentId) || config.AGENT_ID;
+        const agent = state.agentRegistry.get(targetAgentId);
+        if (!agent) {
+          return resErr(id, "not_found", `Agent not found: ${targetAgentId}`);
+        }
+        const requestedWorkspace = normalizePathString(p.workspaceDir);
+        if (requestedWorkspace && requestedWorkspace !== normalizePathString(agent.workspace)) {
+          return resErr(id, "invalid_request", `workspaceDir does not match agent workspace for ${targetAgentId}.`);
+        }
+        try {
+          return resOk(id, skills.installPackagedSkill(agent, { packageId }));
+        } catch (err) {
+          return resErr(id, "invalid_request", sanitizeErrorMessage(err));
+        }
       }
 
       case "skills.update": {
@@ -458,8 +674,49 @@ function createHandleMethod(ctx) {
           return resOk(id, { models: [{ id: config.HERMES_MODEL, name: config.HERMES_MODEL }] });
         }
 
-      case "tasks.list":
-        return resOk(id, { tasks: [] });
+      case "tasks.list": {
+        const includeArchived = p.includeArchived !== false;
+        const tasks = sortTasks([...state.tasksById.values()])
+          .filter((task) => includeArchived || !task.archived)
+          .map((task) => cloneJson(task));
+        return resOk(id, { tasks });
+      }
+
+      case "tasks.create": {
+        let task;
+        try {
+          task = createTaskRecord(p);
+        } catch (err) {
+          return resErr(id, "invalid_request", sanitizeErrorMessage(err));
+        }
+        state.tasksById.set(task.id, task);
+        state.persistAdapterState();
+        return resOk(id, cloneJson(task));
+      }
+
+      case "tasks.update": {
+        const taskId = trimString(p.id);
+        if (!taskId) return resErr(id, "invalid_request", "Task id is required.");
+        const existing = state.tasksById.get(taskId);
+        if (!existing) return resErr(id, "not_found", `Task not found: ${taskId}`);
+        let updated;
+        try {
+          updated = applyTaskPatch(existing, p);
+        } catch (err) {
+          return resErr(id, "invalid_request", sanitizeErrorMessage(err));
+        }
+        state.tasksById.set(taskId, updated);
+        state.persistAdapterState();
+        return resOk(id, cloneJson(updated));
+      }
+
+      case "tasks.delete": {
+        const taskId = trimString(p.id);
+        if (!taskId) return resErr(id, "invalid_request", "Task id is required.");
+        const removed = state.tasksById.delete(taskId);
+        if (removed) state.persistAdapterState();
+        return resOk(id, { ok: true, removed });
+      }
 
       case "cron.list": {
         const includeDisabled = p.includeDisabled !== false;
@@ -469,11 +726,12 @@ function createHandleMethod(ctx) {
 
       case "cron.add": {
         const jobId = randomId();
+        const agentId = typeof p.agentId === "string" && p.agentId.trim() ? p.agentId.trim() : config.AGENT_ID;
         const job = {
           id: jobId,
           name: typeof p.name === "string" ? p.name : "Cron Job",
-          agentId: typeof p.agentId === "string" ? p.agentId : config.AGENT_ID,
-          sessionKey: typeof p.sessionKey === "string" ? p.sessionKey : config.MAIN_SESSION_KEY,
+          agentId,
+          sessionKey: typeof p.sessionKey === "string" ? p.sessionKey : `agent:${agentId}:${config.MAIN_KEY}`,
           description: typeof p.description === "string" ? p.description : "",
           enabled: p.enabled !== false,
           deleteAfterRun: Boolean(p.deleteAfterRun),
@@ -515,20 +773,46 @@ function createHandleMethod(ctx) {
         const jobId = typeof p.id === "string" ? p.id : "";
         const job = state.cronJobs.get(jobId);
         if (!job) return resOk(id, { ok: false });
-        state.cronJobs.set(jobId, { ...job, state: { ...job.state, runningAtMs: Date.now() } });
+        const runId = `cron:${jobId}:${randomId()}`;
+        const runningAtMs = Date.now();
+        const running = { ...job, state: { ...(job.state || {}), runningAtMs } };
+        state.cronJobs.set(jobId, running);
         state.persistAdapterState();
-        setTimeout(() => {
-          const current = state.cronJobs.get(jobId);
-          if (!current) return;
-          const done = {
-            ...current,
-            state: { ...current.state, runningAtMs: undefined, lastRunAtMs: Date.now(), lastStatus: "ok" },
-          };
-          state.cronJobs.set(jobId, done);
-          state.persistAdapterState();
-          events.broadcastEvent({ type: "event", event: "cron", payload: { action: "finished", jobId, status: "ok", summary: done } });
-        }, 3000);
-        return resOk(id, { ok: true, ran: true });
+        sendEvent({
+          type: "event",
+          event: "cron",
+          payload: { action: "started", jobId, runId, status: "running", summary: running },
+        });
+        startChatRun({
+          sessionKey: job.sessionKey || `agent:${job.agentId || config.AGENT_ID}:${config.MAIN_KEY}`,
+          userMessage: resolveCronPrompt(job),
+          runId,
+          sendEvent,
+          onDone(outcome) {
+            const current = state.cronJobs.get(jobId);
+            if (!current) return;
+            const currentState = current.state || {};
+            const { runningAtMs: _runningAtMs, ...restState } = currentState;
+            const lastStatus = outcome.status === "ok" ? "ok" : (outcome.status === "aborted" ? "skipped" : "error");
+            const nextState = {
+              ...restState,
+              lastRunAtMs: Date.now(),
+              lastStatus,
+              lastDurationMs: outcome.durationMs,
+            };
+            if (outcome.errorMessage) nextState.lastError = outcome.errorMessage;
+            else delete nextState.lastError;
+            const done = { ...current, state: nextState };
+            state.cronJobs.set(jobId, done);
+            state.persistAdapterState();
+            sendEvent({
+              type: "event",
+              event: "cron",
+              payload: { action: "finished", jobId, runId, status: lastStatus, summary: done },
+            });
+          },
+        });
+        return resOk(id, { ok: true, ran: true, runId });
       }
 
       default:
