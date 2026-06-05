@@ -83,7 +83,7 @@ directory.
 | 5 | `skills.install` is not implemented. `skills.update` only toggles an in-memory flag, and packaged install relies on a special `chat.send` path for file writes. | P1 | M | Implement after real workspace files exist. |
 | 6 | Task board support is incomplete. The adapter exposes `tasks.list` as an empty list but does not implement `tasks.create`, `tasks.update`, or `tasks.delete`. | P1 | M | A local durable task store would unlock the office task UI for Hermes. |
 | 7 | Cron and heartbeat behavior is mostly simulated. Cron jobs are in memory, and `cron.run` marks a job successful without running a real scheduled chat workload. | P1/P2 | L | Implement after durable state and task storage. Cron should trigger `chat.send` and emit meaningful runtime events. |
-| 8 | Usage and cost analytics are missing. The frontend calls `sessions.usage` and `usage.cost`, but the adapter does not implement them. | P2 | M/L | A history-derived MVP is possible; real cost accounting depends on Hermes response metadata. |
+| 8 | Usage and cost analytics were missing. The frontend calls `sessions.usage` and `usage.cost`, which Hermes initially did not implement. | P2 | M/L | Addressed by Iteration 5A history-derived MVP; optional 5B should harden adapter-owned usage data without turning into the native Hermes provider decision. |
 | 9 | Hermes is not a native Studio provider or ACP-backed provider yet. It is a gateway-shaped adapter. | Strategic P2 | XL | Important long term, but too broad for the next parity slice. |
 
 ## Recommended Iteration Route
@@ -189,22 +189,51 @@ Suggested verification:
 
 Goal: support the analytics panels with best-effort data.
 
-Scope:
+Iteration 5A scope:
 
 - Implement `sessions.usage` from persisted conversation/session history.
 - Implement `usage.cost` as either:
   - zero-cost summary when Hermes lacks metadata, or
   - metadata-derived cost when Hermes responses include token/cost details.
+- Preserve honest source metadata so estimated token counts and zero-cost
+  fallback data are not confused with billing-grade telemetry.
 
 Suggested verification:
 
 - Unit test usage summaries across agents and date ranges.
 - Unit test empty cost data is explicit and stable.
 
+Optional Iteration 5B is an adapter-side hardening slice, not a new strategic
+integration route. Keep it inside the existing gateway-shaped Hermes adapter
+unless Iteration 6 explicitly changes that boundary.
+
+Possible 5B scope:
+
+- Add an adapter-owned usage ledger so analytics can survive history trimming,
+  `sessions.reset`, or future conversation compaction.
+- Expand Hermes response metadata mapping when Hermes exposes richer token,
+  cache, latency, or cost fields.
+- Improve analytics source visibility in UI, especially `estimated`,
+  `metadata`, and `mixed` data.
+- Add retention, export, pagination, or richer per-agent/model/session grouping
+  if the history-derived MVP becomes too coarse.
+
+5B non-goals:
+
+- Do not decide whether Hermes should become a native Studio provider.
+- Do not introduce ACP as the integration boundary.
+- Do not migrate adapter agents into Hermes-native profiles.
+- Do not move the source of truth for Hermes mode out of the gateway adapter.
+
 ### Iteration 6: Native Hermes Provider Or ACP Path
 
 Goal: replace the compatibility facade with a deeper Hermes integration when
 the adapter has already proven the needed product semantics.
+
+Iteration 6 begins only when the question changes from "how should the current
+adapter expose better compatibility data?" to "should Claw3D keep this adapter
+facade, add a native Hermes provider, use ACP, or support multiple integration
+paths?"
 
 Scope:
 
