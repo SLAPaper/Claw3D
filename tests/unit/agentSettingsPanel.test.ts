@@ -224,6 +224,57 @@ describe("AgentSettingsPanel", () => {
     );
   });
 
+  it("shows_stored_only_permissions_notice_for_hermes_while_controls_remain_interactive", () => {
+    render(
+      createElement(AgentSettingsPanel, {
+        agent: createAgent(),
+        adapterType: "hermes",
+        onClose: vi.fn(),
+        onDelete: vi.fn(),
+        onToolCallingToggle: vi.fn(),
+        onThinkingTracesToggle: vi.fn(),
+        cronJobs: [],
+        cronLoading: false,
+        cronError: null,
+        cronRunBusyJobId: null,
+        cronDeleteBusyJobId: null,
+        onRunCronJob: vi.fn(),
+        onDeleteCronJob: vi.fn(),
+      })
+    );
+
+    expect(
+      screen.getByText(/Hermes stores these capability choices as policy metadata only/i)
+    ).toBeInTheDocument();
+    const webSwitch = screen.getByRole("switch", { name: "Web access" });
+    fireEvent.click(webSwitch);
+    expect(webSwitch).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("does_not_show_stored_only_permissions_notice_for_openclaw", () => {
+    render(
+      createElement(AgentSettingsPanel, {
+        agent: createAgent(),
+        adapterType: "openclaw",
+        onClose: vi.fn(),
+        onDelete: vi.fn(),
+        onToolCallingToggle: vi.fn(),
+        onThinkingTracesToggle: vi.fn(),
+        cronJobs: [],
+        cronLoading: false,
+        cronError: null,
+        cronRunBusyJobId: null,
+        cronDeleteBusyJobId: null,
+        onRunCronJob: vi.fn(),
+        onDeleteCronJob: vi.fn(),
+      })
+    );
+
+    expect(
+      screen.queryByText(/Hermes stores these capability choices as policy metadata only/i)
+    ).not.toBeInTheDocument();
+  });
+
   it("updates_switch_aria_state_when_toggled", () => {
     render(
       createElement(AgentSettingsPanel, {

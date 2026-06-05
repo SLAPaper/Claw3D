@@ -86,7 +86,7 @@ office use:
 - Workspace-backed `agents.files.get/list/set` with bootstrap agent brain files
 - Persisted config get/set/patch with hash protection for Studio writes
 - Models and skills status
-- Exec approvals surfaces used by the current UI
+- Stored-only exec approvals metadata used by the current UI
 - Cron list/add/remove/patch/run
 - Multi-agent orchestration tools on the Hermes side
 
@@ -137,7 +137,7 @@ Adapter-owned gateway state is stored at:
 ```
 
 That state includes Claw3D-visible agents, session settings, adapter
-config, skill enablement flags, and cron jobs. Set
+config, stored-only exec approvals metadata, skill enablement flags, and cron jobs. Set
 `HERMES_ADAPTER_STATE_DIR` to store the same
 `claw3d-adapter-state.json` file under a different directory. If the
 state file contains corrupt JSON, the adapter logs a warning and falls
@@ -160,8 +160,9 @@ do not already exist.
 
 - Hermes is integrated through the adapter path today, not yet through a
   dedicated native Studio provider implementation
-- Exec approvals behavior still matches the current adapter compatibility
-  contract, not a fully Hermes-native permissions model
+- Exec approvals, command permissions, tool policy, and sandbox settings are
+  stored as compatibility metadata only. Hermes mode does not enforce them or
+  emit real exec approval request/resolved events.
 - This path is intended to get Hermes working reliably now while the
   broader runtime-provider architecture continues to mature
 

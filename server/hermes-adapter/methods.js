@@ -10,6 +10,11 @@ function createHandleMethod(ctx) {
     resOk,
     resErr,
   } = utils;
+  const STORED_ONLY_EXEC_ENFORCEMENT = {
+    mode: "stored-only",
+    enforced: false,
+    runtime: "hermes",
+  };
 
   return async function handleMethod(method, params, id, sendEvent) {
     const p = params || {};
@@ -371,17 +376,31 @@ function createHandleMethod(ctx) {
 
       case "exec.approvals.get":
         return resOk(id, {
-          path: "",
+          path: config.ADAPTER_STATE_FILE,
           exists: true,
-          hash: "hermes-approvals",
-          file: { version: 1, defaults: { security: "full", ask: "off", autoAllowSkills: true }, agents: {} },
+          hash: state.computeExecApprovalsHash(),
+          file: cloneJson(state.getExecApprovalsFile()),
+          enforcement: STORED_ONLY_EXEC_ENFORCEMENT,
         });
 
-      case "exec.approvals.set":
-        return resOk(id, { hash: "hermes-approvals" });
+      case "exec.approvals.set": {
+        const currentHash = state.computeExecApprovalsHash();
+        if (p.baseHash !== undefined && String(p.baseHash).trim() !== currentHash) {
+          return resErr(id, "invalid_request", config.EXEC_APPROVALS_CHANGED_MESSAGE);
+        }
+        if (!utils.isPlainObject(p.file)) {
+          return resErr(id, "invalid_request", "exec approvals file is required.");
+        }
+        state.replaceExecApprovalsFile(p.file);
+        state.persistAdapterState();
+        return resOk(id, {
+          hash: state.computeExecApprovalsHash(),
+          enforcement: STORED_ONLY_EXEC_ENFORCEMENT,
+        });
+      }
 
       case "exec.approval.resolve":
-        return resOk(id, { ok: true });
+        return resOk(id, { ok: true, enforcement: STORED_ONLY_EXEC_ENFORCEMENT });
 
       case "status": {
         const recent = [...state.agentRegistry.keys()].flatMap((agentId) => {

@@ -107,7 +107,16 @@ function createState(config, utils) {
     };
   }
 
+  function createDefaultExecApprovalsFile() {
+    return {
+      version: 1,
+      defaults: { security: "full", ask: "off", autoAllowSkills: true },
+      agents: {},
+    };
+  }
+
   let adapterConfig = createDefaultConfig();
+  let execApprovalsFile = createDefaultExecApprovalsFile();
   const agentRegistry = new Map([[config.AGENT_ID, createDefaultAgent()]]);
 
   function getConfigAgentList(sourceConfig = adapterConfig) {
@@ -185,6 +194,25 @@ function createState(config, utils) {
     return crypto.createHash("sha256").update(stableStringify(sourceConfig)).digest("hex");
   }
 
+  function computeExecApprovalsHash(sourceFile = execApprovalsFile) {
+    return crypto.createHash("sha256").update(stableStringify(sourceFile)).digest("hex");
+  }
+
+  function normalizeExecApprovalsFile(rawFile) {
+    const raw = isPlainObject(rawFile) ? rawFile : {};
+    const defaults = isPlainObject(raw.defaults)
+      ? cloneJson(raw.defaults)
+      : createDefaultExecApprovalsFile().defaults;
+    const agents = isPlainObject(raw.agents) ? cloneJson(raw.agents) : {};
+    const next = {
+      version: 1,
+      defaults,
+      agents,
+    };
+    if (isPlainObject(raw.socket)) next.socket = cloneJson(raw.socket);
+    return next;
+  }
+
   function parseConfigRaw(raw) {
     if (typeof raw !== "string") throw new Error("raw config JSON is required.");
     const parsed = JSON.parse(raw);
@@ -238,6 +266,7 @@ function createState(config, utils) {
       agents: [...agentRegistry.values()].map((agent) => cloneJson(agent)),
       sessionSettings: mapToJsonObject(sessionSettings),
       config: cloneJson(adapterConfig),
+      execApprovalsFile: cloneJson(execApprovalsFile),
       skillEnabledByKey: mapToJsonObject(skillEnabledByKey),
       cronJobs: mapToJsonObject(cronJobs),
     };
@@ -271,6 +300,7 @@ function createState(config, utils) {
     }
 
     adapterConfig = isPlainObject(state.config) ? cloneJson(state.config) : createDefaultConfig();
+    execApprovalsFile = normalizeExecApprovalsFile(state.execApprovalsFile);
     reconcileAgentRegistryFromConfig({ pruneNonDefault: Array.isArray(adapterConfig.agents?.list) });
 
     hydratePlainObjectMap(sessionSettings, state.sessionSettings, (value) =>
@@ -340,6 +370,14 @@ function createState(config, utils) {
     adapterConfig = deepMergePlainObjects(adapterConfig, patch);
   }
 
+  function getExecApprovalsFile() {
+    return execApprovalsFile;
+  }
+
+  function replaceExecApprovalsFile(nextFile) {
+    execApprovalsFile = normalizeExecApprovalsFile(nextFile);
+  }
+
   loadAdapterStateFromDisk();
 
   return {
@@ -358,11 +396,14 @@ function createState(config, utils) {
     removeConfigAgent,
     reconcileAgentRegistryFromConfig,
     computeConfigHash,
+    computeExecApprovalsHash,
     parseConfigRaw,
     deepMergePlainObjects,
     getAdapterConfig,
     replaceAdapterConfig,
     patchAdapterConfig,
+    getExecApprovalsFile,
+    replaceExecApprovalsFile,
     persistAdapterState,
     loadHistoryFromDisk,
     saveHistoryToDisk,

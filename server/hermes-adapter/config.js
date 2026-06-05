@@ -52,6 +52,7 @@ function createConfig() {
   const HISTORY_FILE = path.join(HOME, ".hermes", "clawd3d-history.json");
   const MAX_TOOL_ROUNDS = 8;
   const CONFIG_CHANGED_MESSAGE = "config changed since last load; re-run config.get and retry";
+  const EXEC_APPROVALS_CHANGED_MESSAGE = "exec approvals changed since last load; re-run exec.approvals.get and retry";
 
   const ORCHESTRATOR_SYSTEM_PROMPT = `You are ${HERMES_AGENT_NAME}, an AI orchestrator managing a team of sub-agents in a virtual 3D office.
 
@@ -92,6 +93,7 @@ Be concise in your responses to the user; do the heavy lifting via tool calls.`;
     HISTORY_FILE,
     MAX_TOOL_ROUNDS,
     CONFIG_CHANGED_MESSAGE,
+    EXEC_APPROVALS_CHANGED_MESSAGE,
     ORCHESTRATOR_SYSTEM_PROMPT,
   };
 }

@@ -271,6 +271,7 @@ export const AgentSettingsPanel = ({
   onSaveSkillApiKey = () => {},
 }: AgentSettingsPanelProps) => {
   const isOpenClawRuntime = adapterType === "openclaw";
+  const isHermesRuntime = adapterType === "hermes";
   const initialPermissionsDraft =
     permissionsDraft ?? resolvePresetDefaultsForRole(resolveExecutionRoleFromAgent(agent));
   const [permissionsBaselineValue, setPermissionsBaselineValue] =
@@ -477,6 +478,17 @@ export const AgentSettingsPanel = ({
       <div className="flex flex-col gap-0 px-5 pb-5">
         {mode === "capabilities" ? (
           <section className="sidebar-section" data-testid="agent-settings-permissions">
+            {isHermesRuntime ? (
+              <div className="ui-alert-warning mb-3 rounded-md px-3 py-2 text-[11px]">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span>
+                    Hermes stores these capability choices as policy metadata only. It does not
+                    enforce command approvals, web access, file tool access, or sandboxing.
+                  </span>
+                </div>
+              </div>
+            ) : null}
             <div className="mt-2 flex flex-col gap-8">
               <div className="px-1 py-1">
                 <div className="sidebar-copy flex flex-col gap-1 text-[11px] text-muted-foreground">

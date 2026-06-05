@@ -19,7 +19,6 @@ const HERMES_RUNTIME_CAPABILITIES: ReadonlySet<RuntimeCapability> = new Set([
   "agent-messages",
   "agent-handoffs",
   "streaming",
-  "approvals",
   "config",
   "models",
   "skills",

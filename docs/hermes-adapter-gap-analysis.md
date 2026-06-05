@@ -41,6 +41,9 @@ The adapter supports the main office and chat path:
   and cron jobs
 - Real `config.get`, `config.set`, and `config.patch` with deterministic hashes
   and stale-write rejection
+- Stored-only `exec.approvals.get`, `exec.approvals.set`, and
+  `exec.approval.resolve` compatibility metadata that is persisted but not
+  enforced by Hermes
 - Real workspace-backed `agents.files.get`, `agents.files.list`, and
   `agents.files.set`
 - Workspace bootstrap for the seven Claw3D agent brain files:
@@ -76,7 +79,7 @@ directory.
 | 1 | Adapter-owned agents, config, session settings, skill flags, and cron jobs previously lived mostly in process memory. | P0 | M | Addressed by Iteration 1 durable state; keep this as the foundation for later parity work. |
 | 2 | `config.get`, `config.patch`, and `config.set` previously reported success without preserving a real OpenClaw-like config model. | P0 | M | Addressed by Iteration 1 persisted config plus deterministic hash/baseHash behavior. |
 | 3 | `agents.files.*` was backed by an in-memory map. OpenClaw creates real workspaces and bootstrap files; Hermes previously only reported paths for many flows. | P0/P1 | M | Addressed by Iteration 2 real workspace files and brain-file bootstrap. |
-| 4 | Exec approvals, command security, tool allow/deny policy, and sandboxing are not enforced like OpenClaw. `exec.approvals.*` is currently a compatibility surface. | P0 | S-XL | First make capability semantics honest in the UI. Full PI/sandbox parity is a larger runtime project. |
+| 4 | Exec approvals, command security, tool allow/deny policy, and sandboxing are not enforced like OpenClaw. `exec.approvals.*` is a stored-only compatibility surface in Hermes mode. | P0 | S-XL | Addressed by Iteration 3 honest stored-only semantics; full PI/sandbox parity remains a larger runtime project. |
 | 5 | `skills.install` is not implemented. `skills.update` only toggles an in-memory flag, and packaged install relies on a special `chat.send` path for file writes. | P1 | M | Implement after real workspace files exist. |
 | 6 | Task board support is incomplete. The adapter exposes `tasks.list` as an empty list but does not implement `tasks.create`, `tasks.update`, or `tasks.delete`. | P1 | M | A local durable task store would unlock the office task UI for Hermes. |
 | 7 | Cron and heartbeat behavior is mostly simulated. Cron jobs are in memory, and `cron.run` marks a job successful without running a real scheduled chat workload. | P1/P2 | L | Implement after durable state and task storage. Cron should trigger `chat.send` and emit meaningful runtime events. |
@@ -145,14 +148,16 @@ not.
 
 Scope:
 
-- Decide whether Hermes permissions controls are:
-  - disabled,
-  - marked as stored-only, or
-  - partially enforced through a new runtime tool bridge.
-- If stored-only, keep config readable but surface the limitation clearly in
-  runtime capability derivation.
-- Avoid returning successful approval/tool-policy writes that imply real
-  command sandbox enforcement.
+- Mark Hermes permissions as stored-only metadata, not enforced runtime policy.
+- Persist `exec.approvals.*` data in the adapter state file so settings can be
+  read back and migrated later.
+- Remove Hermes from the runtime `approvals` capability because it does not
+  emit or enforce real exec approval events.
+- Keep the Capabilities UI usable for policy metadata, but show a Hermes-only
+  warning that command approvals, web access, file tool access, and sandboxing
+  are not enforced.
+- Avoid returning approval responses that imply real command sandbox
+  enforcement.
 
 Suggested verification:
 
