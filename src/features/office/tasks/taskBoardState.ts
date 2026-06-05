@@ -27,6 +27,31 @@ const compareCards = (left: TaskBoardCard, right: TaskBoardCard) => {
 export const sortTaskBoardCards = (cards: TaskBoardCard[]): TaskBoardCard[] =>
   [...cards].sort(compareCards);
 
+const areStringArraysEqual = (left: string[], right: string[]) =>
+  left.length === right.length && left.every((value, index) => value === right[index]);
+
+export const areTaskBoardCardsEqual = (
+  left: TaskBoardCard,
+  right: TaskBoardCard,
+): boolean =>
+  left.id === right.id &&
+  left.title === right.title &&
+  left.description === right.description &&
+  left.status === right.status &&
+  left.source === right.source &&
+  left.sourceEventId === right.sourceEventId &&
+  left.assignedAgentId === right.assignedAgentId &&
+  left.createdAt === right.createdAt &&
+  left.updatedAt === right.updatedAt &&
+  left.playbookJobId === right.playbookJobId &&
+  left.runId === right.runId &&
+  left.channel === right.channel &&
+  left.externalThreadId === right.externalThreadId &&
+  left.lastActivityAt === right.lastActivityAt &&
+  left.isArchived === right.isArchived &&
+  left.isInferred === right.isInferred &&
+  areStringArraysEqual(left.notes, right.notes);
+
 export const upsertTaskBoardCard = (
   cards: TaskBoardCard[],
   nextCard: TaskBoardCard,
@@ -35,6 +60,7 @@ export const upsertTaskBoardCard = (
   if (!cardId) return cards;
   const existingIndex = cards.findIndex((card) => card.id === cardId);
   if (existingIndex < 0) return sortTaskBoardCards([...cards, nextCard]);
+  if (areTaskBoardCardsEqual(cards[existingIndex], nextCard)) return cards;
   const next = [...cards];
   next[existingIndex] = nextCard;
   return sortTaskBoardCards(next);
@@ -50,16 +76,20 @@ export const taskBoardReducer = (
         cards: sortTaskBoardCards(action.preference.cards),
         selectedCardId: action.preference.selectedCardId,
       };
-    case "upsert":
+    case "upsert": {
+      const cards = upsertTaskBoardCard(state.cards, action.card);
+      if (cards === state.cards) return state;
       return {
         ...state,
-        cards: upsertTaskBoardCard(state.cards, action.card),
+        cards,
       };
+    }
     case "upsertMany": {
       let cards = state.cards;
       for (const card of action.cards) {
         cards = upsertTaskBoardCard(cards, card);
       }
+      if (cards === state.cards) return state;
       return { ...state, cards };
     }
     case "update": {
@@ -95,6 +125,7 @@ export const taskBoardReducer = (
       };
     }
     case "select":
+      if (state.selectedCardId === action.cardId) return state;
       return {
         ...state,
         selectedCardId: action.cardId,

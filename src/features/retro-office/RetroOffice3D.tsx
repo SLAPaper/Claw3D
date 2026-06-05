@@ -157,6 +157,10 @@ import type {
   RenderAgent,
   SceneActor,
 } from "@/features/retro-office/core/types";
+import {
+  areRenderAgentUiSnapshotsEqual,
+  type RenderAgentUiSnapshot,
+} from "@/features/retro-office/renderAgentUi";
 import type { NavGrid } from "@/features/retro-office/core/navigation";
 import type { OfficeLayoutSnapshot } from "@/lib/office/layoutSnapshot";
 import { AgentModel as AgentObjectModel } from "@/features/retro-office/objects/agents";
@@ -227,7 +231,6 @@ import {
 import type { OfficeCleaningCue } from "@/lib/office/janitorReset";
 
 type OfficeDeskMonitorMap = Record<string, OfficeDeskMonitor>;
-type RenderAgentUiSnapshot = Pick<RenderAgent, "state" | "status">;
 type FeedEvent = {
   id: string;
   name: string;
@@ -2870,7 +2873,9 @@ export function RetroOffice3D({
           status: agent.status,
         };
       }
-      setRenderAgentUiById(next);
+      setRenderAgentUiById((current) =>
+        areRenderAgentUiSnapshotsEqual(current, next) ? current : next,
+      );
     };
 
     syncRenderAgentUi();

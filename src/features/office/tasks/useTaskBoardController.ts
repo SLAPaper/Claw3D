@@ -566,10 +566,9 @@ const buildPlaybookCards = (
   });
 
 const buildStandupSeedCards = (
-  standup: OfficeStandupController,
+  config: OfficeStandupController["config"],
   existingCards: TaskBoardCard[],
 ): TaskBoardCard[] => {
-  const config = standup.config;
   if (!config) return [];
   return Object.entries(config.manualByAgentId)
     .map(([agentId, entry]) => {
@@ -963,13 +962,13 @@ export const useTaskBoardController = ({
   useEffect(() => {
     if (!hydratedRef.current) return;
     const playbookCards = buildPlaybookCards(cronJobs, stateRef.current.cards);
-    const standupCards = buildStandupSeedCards(standup, stateRef.current.cards);
+    const standupCards = buildStandupSeedCards(standup.config, stateRef.current.cards);
     if (playbookCards.length === 0 && standupCards.length === 0) return;
     dispatch({
       type: "upsertMany",
       cards: [...playbookCards, ...standupCards],
     });
-  }, [cronJobs, standup]);
+  }, [cronJobs, standup.config]);
 
   useEffect(() => {
     if (!hydratedRef.current) return;

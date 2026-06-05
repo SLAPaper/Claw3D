@@ -196,6 +196,52 @@ describe("useGatewayConnection", () => {
     expect(captured.clientName).toBe("openclaw-control-ui");
   });
 
+  it("connects_local_hermes_directly_to_avoid_studio_proxy_upgrade_hangs", async () => {
+    const { useGatewayConnection, captured } = await setupAndImportHook(null);
+    const coordinator = {
+      loadSettings: async () => null,
+      loadSettingsEnvelope: async () => ({
+        settings: {
+          version: 1,
+          gateway: {
+            url: "ws://localhost:18789",
+            token: "",
+            adapterType: "hermes",
+            lastKnownGood: {
+              url: "ws://localhost:18789",
+              token: "",
+              adapterType: "hermes",
+            },
+          },
+          focused: {},
+          avatars: {},
+          analytics: {},
+          voiceReplies: {},
+          office: {},
+          deskAssignments: {},
+          standup: {},
+          taskBoard: {},
+        },
+        localGatewayDefaults: null,
+      }),
+      schedulePatch: () => {},
+      flushPending: async () => {},
+    };
+
+    const Probe = () => {
+      useGatewayConnection(coordinator);
+      return createElement("div", null, "ok");
+    };
+
+    render(createElement(Probe));
+
+    await waitFor(() => {
+      expect(captured.url).toBe("ws://localhost:18789");
+    });
+    expect(captured.authScopeKey).toBe("ws://localhost:18789");
+    expect(captured.clientName).toBe("openclaw-control-ui");
+  });
+
   it("uses_webchat_identity_for_remote_openclaw_connections", async () => {
     const { useGatewayConnection, captured } = await setupAndImportHook(null);
     const coordinator = {
@@ -288,7 +334,7 @@ describe("useGatewayConnection", () => {
     expect(captured.clientName).toBe("openclaw-control-ui");
   });
 
-  it("does_not_auto_connect_without_a_last_known_good_state", async () => {
+  it("auto_connects_local_hermes_with_a_persisted_url_without_last_known_good_state", async () => {
     const { useGatewayConnection, captured } = await setupAndImportHook(null);
     const coordinator = {
       loadSettingsEnvelope: async () => ({
@@ -334,8 +380,10 @@ describe("useGatewayConnection", () => {
     await waitFor(() => {
       expect(screen.getByTestId("gatewayUrl")).toHaveTextContent("ws://localhost:18789");
     });
-    expect(screen.getByTestId("shouldPromptForConnect")).toHaveTextContent("yes");
-    expect(captured.url).toBeNull();
+    expect(screen.getByTestId("shouldPromptForConnect")).toHaveTextContent("no");
+    await waitFor(() => {
+      expect(captured.url).toBe("ws://localhost:18789");
+    });
   });
 
   it("uses_a_small_initial_auto_connect_delay_for_hermes_and_demo_only", async () => {
@@ -606,8 +654,10 @@ describe("useGatewayConnection", () => {
       expect(screen.getByTestId("gatewayUrl")).toHaveTextContent("ws://localhost:18789");
     });
     expect(screen.getByTestId("selectedAdapterType")).toHaveTextContent("hermes");
-    expect(screen.getByTestId("shouldPromptForConnect")).toHaveTextContent("yes");
-    expect(captured.url).toBeNull();
+    expect(screen.getByTestId("shouldPromptForConnect")).toHaveTextContent("no");
+    await waitFor(() => {
+      expect(captured.url).toBe("ws://localhost:18789");
+    });
   });
 
   it("loads_custom_adapter_type_without_requiring_a_token", async () => {

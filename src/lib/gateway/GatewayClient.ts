@@ -139,6 +139,17 @@ export const resolveGatewayClientName = (
     : OPENCLAW_WEBCHAT_UI_CLIENT_ID;
 };
 
+export const resolveGatewayTransportUrl = (
+  adapterType: StudioGatewayAdapterType,
+  gatewayUrl: string
+): string => {
+  const trimmedGatewayUrl = gatewayUrl.trim();
+  if (adapterType === "hermes" && isLocalGatewayUrl(trimmedGatewayUrl)) {
+    return trimmedGatewayUrl;
+  }
+  return resolveStudioProxyGatewayUrl();
+};
+
 export const resolveInitialGatewayAutoConnectDelayMs = (
   adapterType: StudioGatewayAdapterType
 ): number => {
@@ -927,7 +938,7 @@ export const useGatewayConnection = (
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
         try {
           await client.connect({
-            gatewayUrl: resolveStudioProxyGatewayUrl(),
+            gatewayUrl: resolveGatewayTransportUrl(selectedAdapterType, gatewayUrl),
             token,
             authScopeKey: gatewayUrl,
             clientName: resolveGatewayClientName(selectedAdapterType, gatewayUrl),
