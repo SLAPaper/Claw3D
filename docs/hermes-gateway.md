@@ -66,6 +66,19 @@ HERMES_ADAPTER_STATE_DIR=
 `X-Hermes-Session-Token`. If it is unset, the adapter falls back to
 `HERMES_DASHBOARD_SESSION_TOKEN`.
 
+The Hermes adapter loads environment files with `dotenv` in this order:
+
+1. `.env.local`
+2. `.env`
+
+Existing process environment variables have higher priority than either file.
+If a value seems "stuck", clear shell-level `Env:` variables or start a fresh
+terminal session before running the adapter again.
+
+When the adapter is running in development, `.env` and `.env.local` changes are
+also watched and reloaded dynamically, with logs in the form:
+`[hermes-adapter] Reload env: .env`.
+
 ### 3. Start Claw3D and the adapter
 
 In separate terminals:
@@ -89,6 +102,14 @@ the adapter hello response is received.
 Studio, open `/api/gateway/ws`, or connect to Hermes. The Hermes adapter logs
 runtime connection activity only when `npm run dev` or `npm run start` is
 running and a Studio browser session connects through the gateway proxy.
+
+If `.env` changes are not reflected, verify environment overrides first:
+
+```powershell
+Get-ChildItem Env:HERMES_ADAPTER_PORT,Env:HERMES_API_KEY
+Remove-Item Env:HERMES_ADAPTER_PORT -ErrorAction SilentlyContinue
+Remove-Item Env:HERMES_API_KEY -ErrorAction SilentlyContinue
+```
 
 ### 4. Optional all-in-one local startup
 

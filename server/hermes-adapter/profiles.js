@@ -12,15 +12,20 @@ function createProfiles(config, utils) {
     slugifyName,
   } = utils;
 
-  const baseUrl = config.HERMES_PROFILE_API_URL || "";
-  const token = config.HERMES_PROFILE_API_TOKEN || config.HERMES_DASHBOARD_SESSION_TOKEN || "";
+  function getBaseUrl() {
+    return config.HERMES_PROFILE_API_URL || "";
+  }
+
+  function getToken() {
+    return config.HERMES_PROFILE_API_TOKEN || config.HERMES_DASHBOARD_SESSION_TOKEN || "";
+  }
 
   function trimString(value) {
     return typeof value === "string" ? value.trim() : "";
   }
 
   function isConfigured() {
-    return Boolean(baseUrl);
+    return Boolean(getBaseUrl());
   }
 
   function slugifyProfileName(value) {
@@ -135,6 +140,8 @@ function createProfiles(config, utils) {
     if (!isConfigured()) {
       return Promise.reject(new Error("Hermes profile API URL is not configured."));
     }
+    const baseUrl = getBaseUrl();
+    const token = getToken();
     const url = new URL(apiPath, `${baseUrl}/`);
     const bodyText = body === undefined ? null : JSON.stringify(body);
     const headers = {

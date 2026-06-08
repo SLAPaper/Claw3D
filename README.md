@@ -260,6 +260,9 @@ Common environment variables:
 - `CLAW3D_GATEWAY_URL` and `CLAW3D_GATEWAY_TOKEN` provide a runtime alternative to `NEXT_PUBLIC_GATEWAY_URL` that takes effect on server restart without a rebuild.
 - `CLAW3D_GATEWAY_ADAPTER_TYPE` can pair with `CLAW3D_GATEWAY_URL` to mark those runtime defaults as `openclaw`, `hermes`, `demo`, `local`, `claw3d`, or `custom`.
 - If `CLAW3D_GATEWAY_URL` is not set, Studio can still surface local Hermes or demo adapter defaults from `HERMES_ADAPTER_PORT` / `DEMO_ADAPTER_PORT`.
+- `npm run hermes-adapter` loads env from `.env.local` first, then `.env`, using `dotenv`.
+- Existing process environment variables still take priority over `.env.local` and `.env` (dotenv does not override by default).
+- While `npm run hermes-adapter` is running, edits to `.env` / `.env.local` are reloaded at runtime and logged as `Reload env: <file>`.
 - OpenClaw file defaults still come from `~/.openclaw/openclaw.json` when present.
 - `OPENCLAW_STATE_DIR` and `OPENCLAW_CONFIG_PATH` override the default OpenClaw paths.
 - `OPENCLAW_GATEWAY_SSH_TARGET`, `OPENCLAW_GATEWAY_SSH_USER`, `OPENCLAW_GATEWAY_SSH_PORT`, and `OPENCLAW_GATEWAY_SSH_STRICT_HOST_KEY_CHECKING` support advanced gateway-host operations over SSH when needed.
@@ -312,6 +315,7 @@ If the UI loads but Connect fails, the problem is usually on the Studio -> Gatew
 - `401 Studio access token required` usually means `STUDIO_ACCESS_TOKEN` is enabled and the request is missing the expected `studio_access` cookie.
 - If `/api/runtime/custom` returns a blocked-host error in production, set `CUSTOM_RUNTIME_ALLOWLIST` or include the runtime host in `UPSTREAM_ALLOWLIST`.
 - Helpful proxy error codes include `studio.gateway_url_missing`, `studio.gateway_token_missing`, `studio.upstream_error`, and `studio.upstream_closed`.
+- If `.env` changes do not affect `npm run hermes-adapter`, check and clear shell-level overrides first (PowerShell example: `Get-ChildItem Env:HERMES_ADAPTER_PORT,Env:HERMES_API_KEY`; then `Remove-Item Env:HERMES_ADAPTER_PORT` as needed).
 
 Marketplace skill installs now use a gateway-native workspace flow and do not require enabling SSH on the user machine.
 

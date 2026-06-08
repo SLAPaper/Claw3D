@@ -2,6 +2,7 @@
 
 const http = require("http");
 const { WebSocketServer } = require("ws");
+const { startEnvReloadWatcher } = require("./config");
 
 function createEvents() {
   const activeSendEventFns = new Set();
@@ -44,6 +45,22 @@ function createStartAdapter(ctx, handleMethod) {
 
   return function startAdapter() {
     let schedulerHandle = null;
+    const stopEnvWatcher = startEnvReloadWatcher(config, {
+      onReload: ({ envFilePath, changedKeys, previousPort, currentPort }) => {
+        if (envFilePath) {
+          console.info(`[hermes-adapter] Reload env: ${envFilePath}`);
+        }
+        if (changedKeys.length > 0) {
+          console.info(`[hermes-adapter] Applied env changes: ${changedKeys.join(", ")}`);
+        }
+        if (previousPort !== currentPort) {
+          console.info(
+            `[hermes-adapter] HERMES_ADAPTER_PORT changed (${previousPort} -> ${currentPort}); restart adapter to apply new port.`
+          );
+        }
+      },
+    });
+
     const httpServer = http.createServer((req, res) => {
       res.writeHead(200, { "Content-Type": "text/plain" });
       res.end("Hermes Gateway Adapter – OK\n");
@@ -201,6 +218,7 @@ function createStartAdapter(ctx, handleMethod) {
 
     httpServer.on("close", () => {
       schedulerHandle?.stop?.();
+      stopEnvWatcher();
     });
 
     return {
@@ -208,6 +226,7 @@ function createStartAdapter(ctx, handleMethod) {
       wss,
       stop() {
         schedulerHandle?.stop?.();
+        stopEnvWatcher();
         try {
           wss.close();
         } catch {
