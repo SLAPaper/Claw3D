@@ -5256,7 +5256,7 @@ export function RetroOffice3D({
             {/* Local day/night lighting with a faint fill so the office stays readable at night. */}
             <SceneDayNightCycle />
             <hemisphereLight
-              intensity={0.08}
+              intensity={0.12}
               color="#f6efe4"
               groundColor="#111827"
             />

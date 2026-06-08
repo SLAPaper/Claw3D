@@ -241,38 +241,38 @@ const DAY_NIGHT_KEYFRAMES = [
   {
     ambient: "#c8a870",
     sun: "#ffe8b0",
-    sunIntensity: 0.8,
-    ambientIntensity: 0.55,
+    sunIntensity: 1,
+    ambientIntensity: 0.7,
   },
   {
     ambient: "#c8d0e0",
     sun: "#f0f4ff",
-    sunIntensity: 1.3,
-    ambientIntensity: 0.75,
+    sunIntensity: 1.65,
+    ambientIntensity: 0.95,
   },
   {
     ambient: "#c8d0e0",
     sun: "#f0f4ff",
-    sunIntensity: 1.3,
-    ambientIntensity: 0.75,
+    sunIntensity: 1.65,
+    ambientIntensity: 0.95,
   },
   {
     ambient: "#c87840",
     sun: "#ff9050",
-    sunIntensity: 0.9,
-    ambientIntensity: 0.5,
+    sunIntensity: 1.15,
+    ambientIntensity: 0.65,
   },
   {
     ambient: "#1a2040",
     sun: "#2040a0",
-    sunIntensity: 0.3,
-    ambientIntensity: 0.25,
+    sunIntensity: 0.45,
+    ambientIntensity: 0.35,
   },
   {
     ambient: "#101828",
     sun: "#182038",
-    sunIntensity: 0.2,
-    ambientIntensity: 0.2,
+    sunIntensity: 0.32,
+    ambientIntensity: 0.28,
   },
 ];
 
@@ -349,11 +349,11 @@ export function DayNightCycle({
 
   return (
     <>
-      <ambientLight ref={ambientRef} intensity={0.75} color="#c8d0e0" />
+      <ambientLight ref={ambientRef} intensity={0.95} color="#c8d0e0" />
       <directionalLight
         ref={sunRef}
         position={[8, 14, 6]}
-        intensity={1.3}
+        intensity={1.65}
         color="#f0f4ff"
         castShadow
         shadow-mapSize={[1024, 1024]}
