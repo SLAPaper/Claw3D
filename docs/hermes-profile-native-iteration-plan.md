@@ -1,6 +1,6 @@
 # Hermes Profile-Native Iteration Plan
 
-Status: Iteration 1 implemented on 2026-06-05.
+Status: Iterations 1 and 2 implemented.
 
 This document records the current Hermes adapter route after the first
 profile-native slice. The goal is to reduce adapter simulation one iteration at
@@ -89,7 +89,7 @@ Verification gates:
 
 ## Iteration 2: Native Sessions And Chat
 
-Status: planned.
+Status: implemented.
 
 Goal: move conversation/session behavior toward Hermes native session or run
 APIs while keeping the gateway facade stable.
@@ -100,14 +100,30 @@ Candidate Hermes surfaces:
 - Hermes chat stream endpoints, if profile-aware.
 - `/v1/runs`, if it becomes the better run boundary.
 
-Expected scope:
+Implemented scope:
 
-- Resolve the active Hermes profile for each gateway agent/session.
-- Map `sessions.list`, `sessions.preview`, `sessions.reset`, and
-  `chat.history` to Hermes session data where possible.
-- Map `chat.send` to the most native Hermes streaming boundary available.
-- Preserve gateway event shapes: `chat` deltas/final/error and `presence`.
-- Keep adapter fallback only where Hermes lacks the needed native data.
+- Added a Hermes native session client backed by the existing
+  `HERMES_API_URL` and `HERMES_API_KEY`.
+- Added stable Claw3D `sessionKey` to Hermes session id mapping.
+- Send the original `X-Hermes-Session-Key` when streaming native chat.
+- Route named profile `chat.send` calls through
+  `POST /api/sessions/{session_id}/chat/stream`.
+- Lazy-create named profile Hermes sessions with `POST /api/sessions`.
+- Keep the default `hermes` orchestrator on the existing adapter loop.
+- Keep adapter-owned orchestration sub-agents on the existing adapter loop.
+- Prefer Hermes native messages for named profile `chat.history` and
+  `sessions.preview`.
+- Prefer Hermes native session metadata for named profile entries in
+  `sessions.list`.
+- Map named profile `sessions.reset` to `DELETE /api/sessions/{session_id}`
+  and clear the local compatibility mirror.
+- Keep `sessions.patch` as the Claw3D overlay surface for model, thinking, and
+  execution fields; only Hermes-supported metadata is sent to the native
+  session API.
+- Mirror native `run.completed` transcript and usage into local history for
+  existing UI, usage, and fallback compatibility.
+- Log a single native-session compat fallback warning if the Hermes session API
+  is unavailable, then fall back to adapter-owned session state.
 
 Non-goals:
 
@@ -123,6 +139,18 @@ Validation focus:
 - Abort behavior.
 - History reset semantics.
 - Fallback behavior when Hermes native session data is unavailable.
+
+Verification gates:
+
+- `node -c server/hermes-gateway-adapter.js`
+- `node -c server/hermes-adapter/*.js`
+- `tests/unit/hermesGatewayAdapterNativeSessions.test.ts`
+- `tests/unit/hermesGatewayAdapterProfiles.test.ts`
+- `tests/unit/hermesGatewayAdapterState.test.ts`
+- `tests/unit/hermesGatewayAdapterPermissions.test.ts`
+- `tests/unit/hermesGatewayAdapterScheduler.test.ts`
+- `tests/unit/hermesGatewayAdapterSkills.test.ts`
+- `tests/unit/hermesGatewayAdapterSkillsInstall.test.ts`
 
 ## Iteration 3: Profile-Aware Cron
 

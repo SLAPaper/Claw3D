@@ -1,5 +1,7 @@
 "use strict";
 
+const crypto = require("crypto");
+
 function createHandleMethod(ctx) {
   const { config, state, workspaceFiles, hermes, profiles, skills, usage, orchestration, scheduler, utils } = ctx;
   const {
@@ -123,6 +125,7 @@ function createHandleMethod(ctx) {
   }
 
   let warnedProfileFallback = false;
+  let warnedNativeSessionFallback = false;
 
   function agentToGatewayEntry(agent) {
     const entry = {
@@ -227,6 +230,149 @@ function createHandleMethod(ctx) {
     };
   }
 
+  function sessionChannelFromKey(sessionKey) {
+    const parts = String(sessionKey || "").split(":");
+    return parts.length >= 3 ? parts.slice(2).join(":") || config.MAIN_KEY : config.MAIN_KEY;
+  }
+
+  function sessionDisplayName(sessionKey) {
+    const channel = sessionChannelFromKey(sessionKey);
+    if (channel === "heartbeat") return "Heartbeat";
+    return channel === config.MAIN_KEY ? "Main" : channel;
+  }
+
+  function hermesSessionIdForGatewayKey(sessionKey) {
+    const hash = crypto.createHash("sha256").update(String(sessionKey || "")).digest("hex").slice(0, 24);
+    return `claw3d-${hash}`;
+  }
+
+  function isNotFoundError(err) {
+    return err?.statusCode === 404 || /\b404\b/.test(sanitizeErrorMessage(err));
+  }
+
+  function isNativeSessionAgent(agentId) {
+    if (!agentId || agentId === config.AGENT_ID) return false;
+    const agent = state.agentRegistry.get(agentId);
+    const profileName = trimString(agent?.metadata?.hermesProfileName);
+    return Boolean(profileName && profileName !== "default");
+  }
+
+  function nativeProfileNameForAgent(agentId) {
+    const agent = state.agentRegistry.get(agentId);
+    return trimString(agent?.metadata?.hermesProfileName) || agentId;
+  }
+
+  function logNativeSessionFallback(err) {
+    if (warnedNativeSessionFallback) return;
+    warnedNativeSessionFallback = true;
+    console.warn(
+      "[hermes-adapter] Hermes native session API unavailable; using compat fallback:",
+      sanitizeErrorMessage(err)
+    );
+  }
+
+  function textFromHermesMessage(message) {
+    if (typeof message?.content === "string") return message.content;
+    if (Array.isArray(message?.content)) {
+      return message.content
+        .map((part) => {
+          if (typeof part === "string") return part;
+          if (typeof part?.text === "string") return part.text;
+          if (typeof part?.content === "string") return part.content;
+          return "";
+        })
+        .join("");
+    }
+    if (typeof message?.text === "string") return message.text;
+    return "";
+  }
+
+  function normalizeHermesMessage(message) {
+    const role = message?.role === "assistant" ? "assistant" : (message?.role === "tool" ? "tool" : "user");
+    const normalized = {
+      role,
+      content: textFromHermesMessage(message),
+    };
+    if (typeof message?.createdAtMs === "number") normalized.createdAtMs = message.createdAtMs;
+    else if (typeof message?.created_at === "string") {
+      const parsed = Date.parse(message.created_at);
+      if (Number.isFinite(parsed)) normalized.createdAtMs = parsed;
+    }
+    return normalized;
+  }
+
+  async function readNativeMessages(sessionKey) {
+    const agentId = resolveAgentIdFromSessionKey(sessionKey);
+    if (!isNativeSessionAgent(agentId)) return null;
+    const messages = await hermes.listNativeSessionMessages(hermesSessionIdForGatewayKey(sessionKey));
+    return messages.map((message) => normalizeHermesMessage(message));
+  }
+
+  async function ensureNativeSession(sessionKey, agent, model) {
+    const sessionId = hermesSessionIdForGatewayKey(sessionKey);
+    try {
+      await hermes.getNativeSession(sessionId);
+      return sessionId;
+    } catch (err) {
+      if (!isNotFoundError(err)) throw err;
+    }
+    await hermes.createNativeSession({
+      sessionId,
+      title: sessionDisplayName(sessionKey),
+      model,
+      systemPrompt: agent?.systemPrompt,
+    });
+    return sessionId;
+  }
+
+  function storeNativeTranscript({ sessionKey, messages, fallbackUserMessage, fallbackAssistantText, runId, model, usageRecord, durationMs }) {
+    const now = Date.now();
+    const sourceMessages = Array.isArray(messages) && messages.length > 0
+      ? messages
+      : [
+          { role: "user", content: fallbackUserMessage },
+          { role: "assistant", content: fallbackAssistantText },
+        ];
+    const normalized = sourceMessages
+      .map((message) => normalizeHermesMessage(message))
+      .filter((message) => message.content || message.role === "assistant" || message.role === "user")
+      .map((message, index, all) => {
+        const entry = {
+          ...message,
+          createdAtMs: typeof message.createdAtMs === "number" ? message.createdAtMs : now,
+          runId,
+          model,
+          modelProvider: "hermes",
+        };
+        if (index === all.length - 1 && entry.role === "assistant") {
+          if (usageRecord) entry.usage = usageRecord;
+          if (typeof durationMs === "number") entry.durationMs = durationMs;
+        }
+        return entry;
+      });
+    const existing = state.getHistory(sessionKey);
+    state.conversationHistory.set(sessionKey, [...existing, ...normalized]);
+    state.saveHistoryToDisk();
+  }
+
+  function buildSessionEntryFromNative(sessionKey, agent, nativeSession) {
+    const entry = buildSessionEntry(sessionKey, agent);
+    const updatedAt = Date.parse(nativeSession?.updated_at || nativeSession?.updatedAt || nativeSession?.last_message_at || "");
+    if (Number.isFinite(updatedAt)) entry.updatedAt = updatedAt;
+    if (typeof nativeSession?.title === "string" && nativeSession.title.trim()) {
+      entry.displayName = nativeSession.title.trim();
+    }
+    if (typeof nativeSession?.model === "string" && nativeSession.model.trim()) {
+      entry.model = nativeSession.model.trim();
+    }
+    entry.metadata = {
+      ...(utils.isPlainObject(entry.metadata) ? entry.metadata : {}),
+      hermesSessionId: hermesSessionIdForGatewayKey(sessionKey),
+      hermesSessionSource: "native",
+    };
+    return entry;
+  }
+
   function startChatRun({ sessionKey, userMessage, runId, sendEvent, onDone }) {
     const trimmedMessage = trimString(userMessage);
     if (!trimmedMessage) return { status: "no-op", runId };
@@ -305,6 +451,109 @@ function createHandleMethod(ctx) {
         if (onDone) onDone({ status: aborted ? "aborted" : "error", errorMessage, durationMs: Date.now() - startedAtMs });
       } finally {
         state.activeRuns.delete(runId);
+      }
+    });
+
+    return { status: "started", runId };
+  }
+
+  function startNativeSessionChatRun({ sessionKey, userMessage, runId, sendEvent, onDone }) {
+    const trimmedMessage = trimString(userMessage);
+    if (!trimmedMessage) return { status: "no-op", runId };
+
+    const sessionAgentId = resolveAgentIdFromSessionKey(sessionKey);
+    const agent = state.agentRegistry.get(sessionAgentId);
+    let aborted = false;
+
+    state.activeRuns.set(runId, {
+      runId,
+      sessionKey,
+      agentId: sessionAgentId,
+      abort() { aborted = true; },
+    });
+
+    setImmediate(async () => {
+      const startedAtMs = Date.now();
+      const model = (state.sessionSettings.get(sessionKey) || {}).model
+        || agent?.settings?.model || config.HERMES_MODEL;
+      let seqCounter = 0;
+      let handedToCompatFallback = false;
+
+      const emitChat = (stateName, extra) => {
+        sendEvent({
+          type: "event",
+          event: "chat",
+          seq: seqCounter++,
+          payload: { runId, sessionKey, state: stateName, ...extra },
+        });
+      };
+
+      try {
+        const sessionId = await ensureNativeSession(sessionKey, agent, model);
+        const result = await hermes.streamNativeSessionChat({
+          sessionId,
+          sessionKey,
+          message: trimmedMessage,
+          model,
+          profileName: nativeProfileNameForAgent(sessionAgentId),
+          abortCheck: () => aborted,
+          onTextDelta(partial) {
+            if (!aborted) emitChat("delta", { message: { role: "assistant", content: partial } });
+          },
+        });
+        const durationMs = Date.now() - startedAtMs;
+        const finalText = result.textContent || textFromHermesMessage(
+          Array.isArray(result.messages)
+            ? [...result.messages].reverse().find((message) => message?.role === "assistant")
+            : null
+        );
+
+        if (aborted) {
+          emitChat("aborted", {});
+          if (onDone) onDone({ status: "aborted", durationMs });
+        } else {
+          storeNativeTranscript({
+            sessionKey,
+            messages: result.messages,
+            fallbackUserMessage: trimmedMessage,
+            fallbackAssistantText: finalText,
+            runId,
+            model,
+            usageRecord: result.usage,
+            durationMs,
+          });
+          emitChat("final", {
+            stopReason: result.finishReason || "end_turn",
+            message: { role: "assistant", content: finalText },
+          });
+          sendEvent({
+            type: "event",
+            event: "presence",
+            seq: seqCounter++,
+            payload: {
+              sessions: {
+                recent: [{ key: sessionKey, updatedAt: Date.now() }],
+                byAgent: [{ agentId: sessionAgentId, recent: [{ key: sessionKey, updatedAt: Date.now() }] }],
+              },
+            },
+          });
+          if (onDone) onDone({ status: "ok", finalText, durationMs });
+        }
+      } catch (err) {
+        state.activeRuns.delete(runId);
+        if (aborted) {
+          emitChat("aborted", {});
+          if (onDone) onDone({ status: "aborted", durationMs: Date.now() - startedAtMs });
+          return;
+        }
+        logNativeSessionFallback(err);
+        handedToCompatFallback = true;
+        startChatRun({ sessionKey, userMessage: trimmedMessage, runId, sendEvent, onDone });
+        return;
+      } finally {
+        if (!handedToCompatFallback && state.activeRuns.get(runId)?.sessionKey === sessionKey) {
+          state.activeRuns.delete(runId);
+        }
       }
     });
 
@@ -616,6 +865,9 @@ function createHandleMethod(ctx) {
       }
 
       case "sessions.list": {
+        if (profiles?.isConfigured?.()) {
+          await resolveVisibleAgents();
+        }
         const sessionKeys = new Set();
         for (const agent of state.agentRegistry.values()) {
           sessionKeys.add(`agent:${agent.id}:${config.MAIN_KEY}`);
@@ -626,9 +878,27 @@ function createHandleMethod(ctx) {
         for (const run of state.activeRuns.values()) {
           sessionKeys.add(run.sessionKey);
         }
+        let nativeSessionsById = new Map();
+        if ([...state.agentRegistry.keys()].some((agentId) => isNativeSessionAgent(agentId))) {
+          try {
+            const nativeSessions = await hermes.listNativeSessions({ limit: 100, offset: 0 });
+            nativeSessionsById = new Map(
+              nativeSessions
+                .filter((session) => typeof session?.id === "string")
+                .map((session) => [session.id, session])
+            );
+          } catch (err) {
+            logNativeSessionFallback(err);
+          }
+        }
         const sessions = [...sessionKeys].map((sessionKey) => {
           const agentId = resolveAgentIdFromSessionKey(sessionKey);
-          return buildSessionEntry(sessionKey, state.agentRegistry.get(agentId));
+          const agent = state.agentRegistry.get(agentId);
+          const nativeSession = nativeSessionsById.get(hermesSessionIdForGatewayKey(sessionKey));
+          if (nativeSession && isNativeSessionAgent(agentId)) {
+            return buildSessionEntryFromNative(sessionKey, agent, nativeSession);
+          }
+          return buildSessionEntry(sessionKey, agent);
         });
         return resOk(id, { sessions });
       }
@@ -637,7 +907,21 @@ function createHandleMethod(ctx) {
         const keys = Array.isArray(p.keys) ? p.keys : [];
         const limit = typeof p.limit === "number" ? p.limit : 8;
         const maxChars = typeof p.maxChars === "number" ? p.maxChars : 240;
-        const previews = keys.map((key) => {
+        const previews = await Promise.all(keys.map(async (key) => {
+          try {
+            const nativeMessages = await readNativeMessages(key);
+            if (nativeMessages) {
+              if (nativeMessages.length === 0) return { key, status: "empty", items: [] };
+              const items = nativeMessages.slice(-limit).map((msg) => ({
+                role: msg.role === "assistant" ? "assistant" : "user",
+                text: String(msg.content || "").slice(0, maxChars),
+                timestamp: msg.createdAtMs || Date.now(),
+              }));
+              return { key, status: "ok", items };
+            }
+          } catch (err) {
+            logNativeSessionFallback(err);
+          }
           const history = state.getHistory(key);
           if (history.length === 0) return { key, status: "empty", items: [] };
           const items = history.slice(-limit).map((msg) => ({
@@ -646,7 +930,7 @@ function createHandleMethod(ctx) {
             timestamp: Date.now(),
           }));
           return { key, status: "ok", items };
-        });
+        }));
         return resOk(id, { ts: Date.now(), previews });
       }
 
@@ -665,6 +949,18 @@ function createHandleMethod(ctx) {
         state.sessionSettings.set(key, next);
         state.persistAdapterState();
         const resolvedModel = await hermes.resolveHermesModel(next.model || config.HERMES_MODEL);
+        const patch = {};
+        if (typeof p.title === "string") patch.title = p.title;
+        if (typeof p.displayName === "string") patch.title = p.displayName;
+        if (typeof p.endReason === "string") patch.endReason = p.endReason;
+        const agentId = resolveAgentIdFromSessionKey(key);
+        if (isNativeSessionAgent(agentId) && Object.keys(patch).length > 0) {
+          try {
+            await hermes.patchNativeSession(hermesSessionIdForGatewayKey(key), patch);
+          } catch (err) {
+            if (!isNotFoundError(err)) logNativeSessionFallback(err);
+          }
+        }
         return resOk(id, {
           ok: true,
           key,
@@ -675,6 +971,14 @@ function createHandleMethod(ctx) {
 
       case "sessions.reset": {
         const key = typeof p.key === "string" ? p.key : config.MAIN_SESSION_KEY;
+        const agentId = resolveAgentIdFromSessionKey(key);
+        if (isNativeSessionAgent(agentId)) {
+          try {
+            await hermes.deleteNativeSession(hermesSessionIdForGatewayKey(key));
+          } catch (err) {
+            if (!isNotFoundError(err)) logNativeSessionFallback(err);
+          }
+        }
         state.clearHistory(key);
         return resOk(id, { ok: true });
       }
@@ -687,6 +991,9 @@ function createHandleMethod(ctx) {
         if (!userMessage) return resOk(id, { status: "no-op", runId });
 
         const sessionAgentId = resolveAgentIdFromSessionKey(sessionKey);
+        if (!state.agentRegistry.has(sessionAgentId) && profiles?.isConfigured?.()) {
+          await resolveVisibleAgents();
+        }
         const agent = state.agentRegistry.get(sessionAgentId);
 
         if (
@@ -718,6 +1025,10 @@ function createHandleMethod(ctx) {
           });
         }
 
+        if (isNativeSessionAgent(sessionAgentId)) {
+          return resOk(id, startNativeSessionChatRun({ sessionKey, userMessage, runId, sendEvent }));
+        }
+
         return resOk(id, startChatRun({ sessionKey, userMessage, runId, sendEvent }));
       }
 
@@ -745,6 +1056,18 @@ function createHandleMethod(ctx) {
 
       case "chat.history": {
         const histKey = typeof p.sessionKey === "string" ? p.sessionKey : config.MAIN_SESSION_KEY;
+        try {
+          const nativeMessages = await readNativeMessages(histKey);
+          if (nativeMessages) {
+            if (nativeMessages.length > 0) {
+              state.conversationHistory.set(histKey, nativeMessages);
+              state.saveHistoryToDisk();
+            }
+            return resOk(id, { sessionKey: histKey, messages: nativeMessages });
+          }
+        } catch (err) {
+          logNativeSessionFallback(err);
+        }
         return resOk(id, { sessionKey: histKey, messages: state.getHistory(histKey) });
       }
 

@@ -8,7 +8,26 @@ function createHermesApi(config, utils) {
   let cachedHermesModels = null;
   let cachedHermesModelsAt = 0;
 
-  function hermesPost(apiPath, body) {
+  function createHttpError(message, statusCode, payload) {
+    const err = new Error(message);
+    err.statusCode = statusCode;
+    err.payload = payload;
+    return err;
+  }
+
+  function buildHeaders(bodyStr, extraHeaders = {}) {
+    const headers = {
+      ...extraHeaders,
+    };
+    if (bodyStr !== null) {
+      headers["Content-Type"] = "application/json";
+      headers["Content-Length"] = Buffer.byteLength(bodyStr);
+    }
+    if (config.HERMES_API_KEY) headers.Authorization = `Bearer ${config.HERMES_API_KEY}`;
+    return headers;
+  }
+
+  function hermesRequest(method, apiPath, body, extraHeaders) {
     return new Promise((resolve, reject) => {
       const urlStr = config.HERMES_API_URL + apiPath;
       let url;
@@ -19,54 +38,30 @@ function createHermesApi(config, utils) {
         return;
       }
       const transport = url.protocol === "https:" ? https : http;
-      const bodyStr = JSON.stringify(body);
-      const headers = {
-        "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(bodyStr),
-      };
-      if (config.HERMES_API_KEY) headers.Authorization = `Bearer ${config.HERMES_API_KEY}`;
+      const bodyStr = body === undefined ? null : JSON.stringify(body);
+      const headers = buildHeaders(bodyStr, extraHeaders);
       const req = transport.request(
         {
           hostname: url.hostname,
           port: url.port ? parseInt(url.port, 10) : (url.protocol === "https:" ? 443 : 80),
           path: url.pathname + (url.search || ""),
-          method: "POST",
+          method,
           headers,
         },
         resolve
       );
       req.on("error", reject);
-      req.write(bodyStr);
+      if (bodyStr !== null) req.write(bodyStr);
       req.end();
     });
   }
 
-  function hermesGet(apiPath) {
-    return new Promise((resolve, reject) => {
-      const urlStr = config.HERMES_API_URL + apiPath;
-      let url;
-      try {
-        url = new URL(urlStr);
-      } catch {
-        reject(new Error(`Invalid URL: ${urlStr}`));
-        return;
-      }
-      const transport = url.protocol === "https:" ? https : http;
-      const headers = {};
-      if (config.HERMES_API_KEY) headers.Authorization = `Bearer ${config.HERMES_API_KEY}`;
-      const req = transport.request(
-        {
-          hostname: url.hostname,
-          port: url.port ? parseInt(url.port, 10) : (url.protocol === "https:" ? 443 : 80),
-          path: url.pathname + (url.search || ""),
-          method: "GET",
-          headers,
-        },
-        resolve
-      );
-      req.on("error", reject);
-      req.end();
-    });
+  function hermesPost(apiPath, body, extraHeaders) {
+    return hermesRequest("POST", apiPath, body, extraHeaders);
+  }
+
+  function hermesGet(apiPath, extraHeaders) {
+    return hermesRequest("GET", apiPath, undefined, extraHeaders);
   }
 
   async function readJsonBody(res) {
@@ -107,6 +102,191 @@ function createHermesApi(config, utils) {
     cachedHermesModels = models;
     cachedHermesModelsAt = now;
     return models;
+  }
+
+  async function requestJson(method, apiPath, body, extraHeaders) {
+    const res = await hermesRequest(method, apiPath, body, extraHeaders);
+    const payload = await readJsonBody(res);
+    if (res.statusCode >= 400) {
+      throw createHttpError(
+        `Hermes API ${method} ${apiPath} HTTP ${res.statusCode}`,
+        res.statusCode,
+        payload
+      );
+    }
+    return payload;
+  }
+
+  function extractSession(payload) {
+    if (payload && typeof payload === "object" && payload.session && typeof payload.session === "object") {
+      return payload.session;
+    }
+    return payload;
+  }
+
+  async function listNativeSessions(options = {}) {
+    const limit = Number.isFinite(options.limit) ? Math.max(1, Math.min(options.limit, 500)) : 100;
+    const offset = Number.isFinite(options.offset) ? Math.max(0, options.offset) : 0;
+    const payload = await requestJson("GET", `/api/sessions?limit=${limit}&offset=${offset}`);
+    if (Array.isArray(payload?.data)) return payload.data;
+    if (Array.isArray(payload?.sessions)) return payload.sessions;
+    return [];
+  }
+
+  async function getNativeSession(sessionId) {
+    const encoded = encodeURIComponent(sessionId);
+    return extractSession(await requestJson("GET", `/api/sessions/${encoded}`));
+  }
+
+  async function createNativeSession(input) {
+    const body = {
+      id: input.sessionId,
+      session_id: input.sessionId,
+      title: input.title || "Main",
+    };
+    if (input.model) body.model = input.model;
+    if (input.systemPrompt) body.system_prompt = input.systemPrompt;
+    return extractSession(await requestJson("POST", "/api/sessions", body));
+  }
+
+  async function patchNativeSession(sessionId, patch) {
+    const body = {};
+    if (typeof patch?.title === "string") body.title = patch.title;
+    if (typeof patch?.endReason === "string") body.end_reason = patch.endReason;
+    if (Object.keys(body).length === 0) return null;
+    return extractSession(await requestJson("PATCH", `/api/sessions/${encodeURIComponent(sessionId)}`, body));
+  }
+
+  async function deleteNativeSession(sessionId) {
+    return requestJson("DELETE", `/api/sessions/${encodeURIComponent(sessionId)}`);
+  }
+
+  async function listNativeSessionMessages(sessionId) {
+    const payload = await requestJson("GET", `/api/sessions/${encodeURIComponent(sessionId)}/messages`);
+    if (Array.isArray(payload?.data)) return payload.data;
+    if (Array.isArray(payload?.messages)) return payload.messages;
+    return [];
+  }
+
+  function normalizeSseData(rawData) {
+    if (typeof rawData !== "string" || !rawData.trim()) return {};
+    try {
+      return JSON.parse(rawData);
+    } catch {
+      return { text: rawData };
+    }
+  }
+
+  function extractAssistantDelta(eventName, payload) {
+    if (!payload || typeof payload !== "object") return "";
+    if (typeof payload.delta === "string") return payload.delta;
+    if (typeof payload.text === "string") return payload.text;
+    if (typeof payload.content === "string") return payload.content;
+    if (typeof payload.message?.content === "string") return payload.message.content;
+    const choice = Array.isArray(payload.choices) ? payload.choices[0] : null;
+    if (typeof choice?.delta?.content === "string") return choice.delta.content;
+    if (eventName === "assistant.delta" && typeof payload.message === "string") return payload.message;
+    return "";
+  }
+
+  async function streamNativeSessionChat(input) {
+    const body = {
+      message: input.message,
+    };
+    if (input.model) body.model = input.model;
+    if (input.profileName && input.profileName !== "default") body.profile = input.profileName;
+    const headers = {};
+    if (input.sessionKey) headers["X-Hermes-Session-Key"] = input.sessionKey;
+    const res = await hermesPost(
+      `/api/sessions/${encodeURIComponent(input.sessionId)}/chat/stream`,
+      body,
+      headers
+    );
+    if (res.statusCode >= 400) {
+      const payload = await readJsonBody(res);
+      throw createHttpError(
+        `Hermes API POST /api/sessions/${input.sessionId}/chat/stream HTTP ${res.statusCode}`,
+        res.statusCode,
+        payload
+      );
+    }
+
+    let buffer = "";
+    let currentEvent = "message";
+    let currentData = [];
+    let textContent = "";
+    let completedMessages = null;
+    let usage = null;
+    let finishReason = "end_turn";
+    let streamError = null;
+
+    const flushEvent = () => {
+      if (currentData.length === 0) {
+        currentEvent = "message";
+        return;
+      }
+      const payload = normalizeSseData(currentData.join("\n"));
+      if (input.onEvent) input.onEvent(currentEvent, payload);
+      const delta = extractAssistantDelta(currentEvent, payload);
+      if (delta) {
+        textContent += delta;
+        if (input.onTextDelta) input.onTextDelta(textContent, delta, payload);
+      }
+      if (currentEvent === "run.completed") {
+        if (Array.isArray(payload?.messages)) completedMessages = payload.messages;
+        if (payload?.usage && typeof payload.usage === "object") usage = payload.usage;
+        if (typeof payload?.finish_reason === "string") finishReason = payload.finish_reason;
+        if (typeof payload?.finishReason === "string") finishReason = payload.finishReason;
+      }
+      if (currentEvent === "error") {
+        streamError = payload?.error || payload?.message || "Hermes native session stream error";
+      }
+      currentEvent = "message";
+      currentData = [];
+    };
+
+    await new Promise((resolve, reject) => {
+      res.on("data", (chunk) => {
+        if (input.abortCheck && input.abortCheck()) {
+          res.destroy();
+          return;
+        }
+        buffer += chunk.toString("utf8");
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) {
+            flushEvent();
+            continue;
+          }
+          if (line.startsWith("event:")) {
+            currentEvent = line.slice(6).trim() || "message";
+            continue;
+          }
+          if (line.startsWith("data:")) {
+            const data = line.slice(5).trim();
+            if (data === "[DONE]") continue;
+            currentData.push(data);
+          }
+        }
+      });
+      res.on("end", () => {
+        flushEvent();
+        resolve();
+      });
+      res.on("error", reject);
+    });
+
+    if (streamError) {
+      throw new Error(typeof streamError === "string" ? streamError : JSON.stringify(streamError));
+    }
+
+    return {
+      textContent,
+      messages: completedMessages,
+      usage,
+      finishReason,
+    };
   }
 
   async function resolveHermesModel(requestedModel) {
@@ -279,6 +459,13 @@ function createHermesApi(config, utils) {
     resolveHermesModel,
     completeOneTurn,
     streamOneTurn,
+    listNativeSessions,
+    getNativeSession,
+    createNativeSession,
+    patchNativeSession,
+    deleteNativeSession,
+    listNativeSessionMessages,
+    streamNativeSessionChat,
   };
 }
 
