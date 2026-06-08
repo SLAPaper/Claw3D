@@ -22,6 +22,9 @@ const eslintConfig = defineConfig([
 
     // Vendored third-party code (kept as-is; linting it adds noise).
     "src/lib/avatars/vendor/**",
+
+    // External workspace code not owned by this app.
+    "hermes-agent/**",
   ]),
   prettier,
 ]);
