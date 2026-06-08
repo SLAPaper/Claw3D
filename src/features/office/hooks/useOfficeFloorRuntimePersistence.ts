@@ -13,6 +13,18 @@ interface Params {
   settingsCoordinator: StudioSettingsCoordinator;
 }
 
+const OFFICE_OBSERVABILITY_QUERY_KEY = "officeObs";
+const OFFICE_OBSERVABILITY_STORAGE_KEY = "claw3d.office.obs";
+
+const isOfficeObsEnabled = (): boolean => {
+  if (typeof window === "undefined") return false;
+  const params = new URLSearchParams(window.location.search);
+  if (params.get(OFFICE_OBSERVABILITY_QUERY_KEY) === "1") {
+    return true;
+  }
+  return window.localStorage.getItem(OFFICE_OBSERVABILITY_STORAGE_KEY) === "1";
+};
+
 /**
  * Persists live gateway connection transitions into `officeFloors` settings.
  *
@@ -44,6 +56,9 @@ export function useOfficeFloorRuntimePersistence({
   useEffect(() => {
     const key = gatewayUrl.trim();
     if (!key) {
+      if (isOfficeObsEnabled()) {
+        console.warn("[officeObs] runtimePersistence.resetSignature");
+      }
       lastPatchSignatureRef.current = null;
       return;
     }
@@ -74,8 +89,25 @@ export function useOfficeFloorRuntimePersistence({
       ownerFloorId,
       status,
     });
-    if (lastPatchSignatureRef.current === patchSignature) return;
+    if (lastPatchSignatureRef.current === patchSignature) {
+      if (isOfficeObsEnabled()) {
+        console.warn("[officeObs] runtimePersistence.skipPatch", {
+          ownerFloorId,
+          patchSignature,
+          status,
+        });
+      }
+      return;
+    }
     lastPatchSignatureRef.current = patchSignature;
+
+    if (isOfficeObsEnabled()) {
+      console.warn("[officeObs] runtimePersistence.schedulePatch", {
+        ownerFloorId,
+        patchSignature,
+        status,
+      });
+    }
 
     settingsCoordinator.schedulePatch(
       { officeFloors: { [ownerFloorId]: patch } },

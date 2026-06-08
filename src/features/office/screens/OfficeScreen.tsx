@@ -265,6 +265,8 @@ const createDemoMainAgentSeed = (): {
 const MAX_OPENCLAW_LOG_ENTRIES = 200;
 const MAX_OPENCLAW_AGENT_OUTPUT_LINES = 12;
 const OFFICE_DANCE_MS = 60_000;
+const OFFICE_OBSERVABILITY_QUERY_KEY = "officeObs";
+const OFFICE_OBSERVABILITY_STORAGE_KEY = "claw3d.office.obs";
 const GATEWAY_LOADING_OVERLAY_DELAY_MS = 1_200;
 const GATEWAY_CONNECT_OVERLAY_DELAY_MS = 1_500;
 
@@ -962,6 +964,32 @@ export function OfficeScreen({
     if (typeof window === "undefined") return false;
     return new URLSearchParams(window.location.search).get("officeDebug") === "1";
   }, []);
+  const officeObsEnabled = useMemo(() => {
+    if (typeof window === "undefined") return false;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get(OFFICE_OBSERVABILITY_QUERY_KEY) === "1") {
+      return true;
+    }
+    return window.localStorage.getItem(OFFICE_OBSERVABILITY_STORAGE_KEY) === "1";
+  }, []);
+  const officeObsRenderCountRef = useRef(0);
+  const officeObsEventCountsRef = useRef<Record<string, number>>({});
+  const officeObsRuntimeSnapshotRef = useRef<Record<string, unknown>>({});
+  const officeObsLog = useCallback(
+    (event: string, payload?: Record<string, unknown>) => {
+      if (!officeObsEnabled) return;
+      const nextCount = (officeObsEventCountsRef.current[event] ?? 0) + 1;
+      officeObsEventCountsRef.current[event] = nextCount;
+      const shouldEmit = nextCount <= 5 || nextCount % 50 === 0;
+      if (!shouldEmit) return;
+      if (payload) {
+        console.warn(`[officeObs] ${event}#${nextCount}`, payload);
+        return;
+      }
+      console.warn(`[officeObs] ${event}#${nextCount}`);
+    },
+    [officeObsEnabled],
+  );
   const [settingsCoordinator] = useState(() =>
     createStudioSettingsCoordinator(),
   );
@@ -1052,6 +1080,9 @@ export function OfficeScreen({
     Record<string, number>
   >({});
   const prevImmediateGymHoldRef = useRef<Record<string, boolean>>({});
+  const marketplaceGymHoldReconcileSignatureRef = useRef("");
+  const gymCooldownReconcileSignatureRef = useRef("");
+  const gymCooldownEntryCountRef = useRef(0);
   const [monitorAgentId, setMonitorAgentId] = useState<string | null>(null);
   const [githubReviewAgentId, setGithubReviewAgentId] = useState<string | null>(
     null,
@@ -1564,7 +1595,19 @@ export function OfficeScreen({
         },
       }),
     }));
-  }, [activeFloor.id, agentsLoaded, pendingFloorRuntimeSwitch, state.agents, state.selectedAgentId]);
+    officeObsLog("effect.floorRosterSync", {
+      activeFloorId: activeFloor.id,
+      agentCount: state.agents.length,
+      selectedAgentId: state.selectedAgentId,
+    });
+  }, [
+    activeFloor.id,
+    agentsLoaded,
+    officeObsLog,
+    pendingFloorRuntimeSwitch,
+    state.agents,
+    state.selectedAgentId,
+  ]);
 
   const handleDeskAssignmentChange = useCallback(
     (deskUid: string, agentId: string | null) => {
@@ -1630,6 +1673,60 @@ export function OfficeScreen({
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  useEffect(() => {
+    if (!officeObsEnabled) return;
+    officeObsRenderCountRef.current += 1;
+    officeObsRuntimeSnapshotRef.current = {
+      activeFloorId,
+      agentCount: state.agents.length,
+      agentsLoaded,
+      gatewayUrl,
+      selectedAgentId: state.selectedAgentId,
+      status,
+    };
+    officeObsLog("render", {
+      activeFloorId,
+      agentCount: state.agents.length,
+      agentsLoaded,
+      renderCount: officeObsRenderCountRef.current,
+      selectedAgentId: state.selectedAgentId,
+      status,
+    });
+  });
+
+  useEffect(() => {
+    if (!officeObsEnabled) return;
+    const originalConsoleError = console.error;
+    console.error = (...args: unknown[]) => {
+      const hasMaxDepthMessage = args.some(
+        (value) =>
+          typeof value === "string" &&
+          value.includes("Maximum update depth exceeded"),
+      );
+      if (hasMaxDepthMessage) {
+        const serializedArgs = args.map((value) => {
+          if (typeof value === "string") return value;
+          try {
+            return JSON.stringify(value);
+          } catch {
+            return String(value);
+          }
+        });
+        originalConsoleError(
+          `[officeObs] maxDepth.detected ${JSON.stringify({
+            args: serializedArgs,
+            eventCounts: officeObsEventCountsRef.current,
+            snapshot: officeObsRuntimeSnapshotRef.current,
+          })}`,
+        );
+      }
+      originalConsoleError(...args);
+    };
+    return () => {
+      console.error = originalConsoleError;
+    };
+  }, [officeObsEnabled]);
 
   const hasRunningAgents = useMemo(
     () =>
@@ -2987,18 +3084,34 @@ export function OfficeScreen({
   }, [agentsLoaded, loadAgents, status]);
 
   useEffect(() => {
+    officeObsLog("effect.reconcileOfficeTriggers", {
+      agentCount: state.agents.length,
+    });
     setOfficeTriggerState((previous) =>
       reconcileOfficeAnimationTriggerState({
         state: previous,
         agents: state.agents,
       }),
     );
-  }, [state.agents]);
+  }, [officeObsLog, state.agents]);
 
   useEffect(() => {
+    const activeAgentSignature = state.agents
+      .map((agent) => agent.agentId)
+      .sort()
+      .join("\u001f");
+    if (marketplaceGymHoldReconcileSignatureRef.current === activeAgentSignature) {
+      officeObsLog("effect.marketplaceGymHold.fastSkip", {
+        signatureSize: activeAgentSignature.length,
+      });
+      return;
+    }
+    marketplaceGymHoldReconcileSignatureRef.current = activeAgentSignature;
     setMarketplaceGymHoldByAgentId((previous) => {
       const activeAgentIds = new Set(
-        state.agents.map((agent) => agent.agentId),
+        activeAgentSignature.length > 0
+          ? activeAgentSignature.split("\u001f")
+          : [],
       );
       const next = Object.fromEntries(
         Object.entries(previous).filter(
@@ -3011,11 +3124,18 @@ export function OfficeScreen({
           (agentId) => previous[agentId] === next[agentId],
         )
       ) {
+        officeObsLog("effect.marketplaceGymHold.skip", {
+          previousEntries: Object.keys(previous).length,
+        });
         return previous;
       }
+      officeObsLog("effect.marketplaceGymHold.update", {
+        nextEntries: Object.keys(next).length,
+        previousEntries: Object.keys(previous).length,
+      });
       return next;
     });
-  }, [state.agents]);
+  }, [officeObsLog, state.agents]);
 
   useEffect(() => {
     if (!monitorAgentId) return;
@@ -3181,13 +3301,12 @@ export function OfficeScreen({
     enabled: runtimeSupportsSkills,
     agents: state.agents,
   });
-  const animationNowMs = Date.now();
   const officeAnimationState = useMemo(() => {
     const base = buildOfficeAnimationState({
       state: officeTriggerState,
       agents: state.agents,
       marketplaceGymHoldByAgentId,
-      nowMs: animationNowMs,
+      nowMs: Date.now(),
     });
     const skillTriggerHoldMaps = buildOfficeSkillTriggerHoldMaps(
       skillTriggers.movementTargetByAgentId,
@@ -3222,7 +3341,6 @@ export function OfficeScreen({
       },
     };
   }, [
-    animationNowMs,
     danceUntilByAgentId,
     marketplaceGymHoldByAgentId,
     officeTriggerState,
@@ -3250,8 +3368,45 @@ export function OfficeScreen({
     }),
     [marketplaceGymHoldByAgentId, skillGymHoldByAgentId],
   );
+  const immediateGymHoldCount = useMemo(
+    () => Object.keys(immediateGymHoldByAgentId).length,
+    [immediateGymHoldByAgentId],
+  );
 
   useEffect(() => {
+    const agentIdSignature = state.agents
+      .map((agent) => agent.agentId)
+      .sort()
+      .join("\u001f");
+    const immediateHoldSignature = Object.keys(immediateGymHoldByAgentId)
+      .sort()
+      .join("\u001f");
+    const reconcileSignature = `${agentIdSignature}::${immediateHoldSignature}`;
+    if (gymCooldownReconcileSignatureRef.current === reconcileSignature) {
+      officeObsLog("effect.gymCooldown.reconcileFastSkip", {
+        activeImmediateHolds: immediateGymHoldCount,
+        agentCount: state.agents.length,
+      });
+      return;
+    }
+    gymCooldownReconcileSignatureRef.current = reconcileSignature;
+
+    const hasAgents = state.agents.length > 0;
+    const hasPreviousImmediateHoldState =
+      Object.keys(prevImmediateGymHoldRef.current).length > 0;
+    const hasCooldownEntries = gymCooldownEntryCountRef.current > 0;
+    if (
+      !hasAgents &&
+      immediateGymHoldCount === 0 &&
+      !hasPreviousImmediateHoldState &&
+      !hasCooldownEntries
+    ) {
+      officeObsLog("effect.gymCooldown.fastSkip", {
+        agentCount: 0,
+      });
+      return;
+    }
+
     const now = Date.now();
     setGymCooldownUntilByAgentId((previous) => {
       const next: Record<string, number> = {};
@@ -3283,15 +3438,29 @@ export function OfficeScreen({
       );
       const prevKeys = Object.keys(previous);
       const nextKeys = Object.keys(next);
+      gymCooldownEntryCountRef.current = nextKeys.length;
       if (
         prevKeys.length === nextKeys.length &&
         nextKeys.every((key) => previous[key] === next[key])
       ) {
+        officeObsLog("effect.gymCooldown.skip", {
+          activeImmediateHolds: immediateGymHoldCount,
+          agentCount: state.agents.length,
+        });
         return previous;
       }
+      officeObsLog("effect.gymCooldown.update", {
+        nextEntries: nextKeys.length,
+        previousEntries: prevKeys.length,
+      });
       return next;
     });
-  }, [immediateGymHoldByAgentId, state.agents]);
+  }, [
+    immediateGymHoldByAgentId,
+    immediateGymHoldCount,
+    officeObsLog,
+    state.agents,
+  ]);
 
   const activeGithubReviewAgentId = useMemo(
     () =>
@@ -3638,20 +3807,20 @@ export function OfficeScreen({
   );
 
   const gymHoldByAgentId = useMemo(() => {
+    const nowMs = Date.now();
     const next: Record<string, boolean> = {};
     for (const agent of state.agents) {
       const agentId = agent.agentId;
       if (
         immediateGymHoldByAgentId[agentId] ||
-        (manualGymUntilByAgentId[agentId] ?? 0) > animationNowMs ||
-        (gymCooldownUntilByAgentId[agentId] ?? 0) > animationNowMs
+        (manualGymUntilByAgentId[agentId] ?? 0) > nowMs ||
+        (gymCooldownUntilByAgentId[agentId] ?? 0) > nowMs
       ) {
         next[agentId] = true;
       }
     }
     return next;
   }, [
-    animationNowMs,
     gymCooldownUntilByAgentId,
     immediateGymHoldByAgentId,
     manualGymUntilByAgentId,
