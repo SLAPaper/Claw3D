@@ -25,7 +25,7 @@ import {
   useState,
 } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Environment, OrbitControls } from "@react-three/drei";
+import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import { SettingsPanel } from "@/features/office/components/panels/SettingsPanel";
 import { AtmImmersiveScreen } from "@/features/office/screens/AtmImmersiveScreen";
@@ -215,6 +215,7 @@ import {
 import {
   CAMERA_PRESETS as CAMERA_PRESET_MAP,
   CameraAnimator as CameraPresetAnimator,
+  DayNightCycle as SceneDayNightCycle,
   FollowCamController as FollowCamSystem,
 } from "@/features/retro-office/systems/cameraLighting";
 import {
@@ -5252,21 +5253,12 @@ export function RetroOffice3D({
               agentLookupRef={renderAgentLookupRef}
             />
 
-            {/* Keep office lighting static to avoid extra scene churn from ambience effects. */}
-            <ambientLight intensity={0.72} color="#d8d4c8" />
-            <directionalLight
-              position={[8, 14, 6]}
-              intensity={1.1}
-              color="#f6f1e6"
-              castShadow
-              shadow-mapSize={[1024, 1024]}
-              shadow-bias={-0.0002}
-              shadow-normalBias={0.02}
-            />
-            <directionalLight
-              position={[-5, 8, -4]}
-              intensity={0.4}
-              color="#7090ff"
+            {/* Local day/night lighting with a faint fill so the office stays readable at night. */}
+            <SceneDayNightCycle />
+            <hemisphereLight
+              intensity={0.08}
+              color="#f6efe4"
+              groundColor="#111827"
             />
 
             {/* Floor + walls — always visible, no async loading. */}
@@ -5275,10 +5267,7 @@ export function RetroOffice3D({
             {/* Wall pictures — procedural, no async loading. */}
             <SceneWallPictures showRemoteOffice={remoteOfficeEnabled} />
 
-            {/* Environment lighting — async, wrapped in its own Suspense so floor stays visible. */}
-            <Suspense fallback={null}>
-              <Environment preset="city" />
-            </Suspense>
+            {/* Local fill lighting only; avoid remote HDR dependencies. */}
 
             {/* Furniture models — each loads its GLB asynchronously. */}
             <Suspense fallback={null}>

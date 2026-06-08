@@ -1,6 +1,6 @@
 "use client";
 
-import { Environment, OrbitControls } from "@react-three/drei";
+import { OrbitControls } from "@react-three/drei";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
@@ -322,13 +322,13 @@ export const AgentAvatarPreview3D = ({
         <ambientLight intensity={1.4} />
         <directionalLight position={[3, 4, 5]} intensity={2.4} />
         <directionalLight position={[-4, 2, 3]} intensity={0.9} color="#89a6ff" />
+        <hemisphereLight intensity={0.38} color="#f3efe6" groundColor="#162030" />
         <PreviewFigure
           profile={resolvedProfile}
           onFirstFrame={() => {
             setReadyProfileKey(profileKey);
           }}
         />
-        <Environment preset="city" />
         <OrbitControls enablePan={false} enableZoom={false} maxPolarAngle={1.8} minPolarAngle={1.1} />
       </Canvas>
     </div>
